@@ -372,10 +372,81 @@ let selectedDate = new Date();
 let currentOwner = localStorage.getItem('boardOwnerName') || '';
 let filterMode = 'mine';
 let currentTeamFilter = '';
+let currentTagFilter = '';
 let knownOwnerNames = [];
 
 function saveKnownOwnerNames(){
   apiSetSettings({ knownOwnerNames: knownOwnerNames });
+}
+
+function getKnownTaskTags(){
+  const tags = new Set();
+  data.forEach(g => { g.projects.forEach(p => { p.tasks.forEach(t => { if(t.tag) tags.add(t.tag); }); }); });
+  return Array.from(tags).sort((a,b) => a.localeCompare(b, 'ko'));
+}
+
+function openTaskTagPicker(anchorEl, currentTag, onSelect){
+  const rect = anchorEl.getBoundingClientRect();
+  const tags = getKnownTaskTags();
+  const select = document.createElement('select');
+  select.style.cssText = 'position:fixed; top:' + (rect.bottom + 4) + 'px; left:' + Math.max(8, rect.left - 60) + 'px; z-index:999; font-size:14px; padding:6px 8px; border:1px solid #2563eb; border-radius:6px; max-width:200px;';
+
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '__none__';
+  noneOpt.textContent = '태그 없음';
+  if(!currentTag) noneOpt.selected = true;
+  select.appendChild(noneOpt);
+
+  const newOpt = document.createElement('option');
+  newOpt.value = '__new__';
+  newOpt.textContent = '+ 새 태그 추가';
+  select.appendChild(newOpt);
+
+  tags.forEach(tag => {
+    const opt = document.createElement('option');
+    opt.value = tag;
+    opt.textContent = tag;
+    if(tag === currentTag) opt.selected = true;
+    select.appendChild(opt);
+  });
+
+  document.body.appendChild(select);
+
+  let handled = false;
+  let outsideClickHandler = null;
+  const cleanup = () => {
+    if(outsideClickHandler){
+      document.removeEventListener('mousedown', outsideClickHandler, true);
+      outsideClickHandler = null;
+    }
+    if(select.parentNode) select.parentNode.removeChild(select);
+  };
+
+  select.addEventListener('change', () => {
+    if(handled) return;
+    handled = true;
+    const val = select.value;
+    const selRect = select.getBoundingClientRect();
+    cleanup();
+    if(val === '__new__'){
+      openInlineTextInput(selRect, '태그명 입력 후 Enter', (name) => {
+        if(name && name.trim()) onSelect(name.trim());
+      });
+    } else if(val === '__none__'){
+      onSelect('');
+    } else {
+      onSelect(val);
+    }
+  });
+
+  select.addEventListener('blur', () => { setTimeout(() => { if(!handled) cleanup(); }, 200); });
+  outsideClickHandler = (e) => { if(e.target !== select){ if(!handled) cleanup(); } };
+  setTimeout(() => { document.addEventListener('mousedown', outsideClickHandler, true); }, 0);
+
+  requestAnimationFrame(() => {
+    try { if(select.showPicker){ select.showPicker(); } else { select.focus(); } }
+    catch(e){ select.focus(); }
+  });
 }
 
 function registerOwnerName(name){
@@ -421,6 +492,9 @@ function ownerIncludesPerson(ownerStr, person){
 function getVisibleProjects(dateGroup){
   if(!dateGroup) return [];
   if(filterMode === 'all') return dateGroup.projects;
+  if(filterMode === 'tag' && currentTagFilter){
+    return dateGroup.projects.filter(p => p.tasks.some(t => t.tag === currentTagFilter));
+  }
   if(filterMode === 'team' && currentTeamFilter){
     return dateGroup.projects.filter(p => {
       const o = getProjOwner(p);
@@ -433,6 +507,9 @@ function getVisibleProjects(dateGroup){
 
 function isTaskVisible(task){
   if(filterMode === 'all') return true;
+  if(filterMode === 'tag' && currentTagFilter){
+    return task.tag === currentTagFilter;
+  }
   if(filterMode === 'team' && currentTeamFilter){
     return !task.owner || ownerBelongsToTeam(task.owner, currentTeamFilter);
   }
@@ -733,14 +810,19 @@ function renderWeekly(){
       });
 
       if(proj && proj.tasks.length > 0){
-        const regularTasks = proj.tasks.filter(t => !t.category);
+        const regularTasks = proj.tasks.filter(t => !t.category && isTaskVisible(t));
         regularTasks.forEach(task => {
           const line = document.createElement('div');
           line.className = 'weekly-task-line';
           line.style.background = accentColor + '22';
           line.style.borderLeft = '3px solid ' + accentColor;
           if(task.done){ line.style.textDecoration = 'line-through'; line.style.opacity = '0.55'; }
-          line.textContent = task.text || '(내용 없음)';
+          if(task.tag){
+            const tagColor = ownerColorFor(task.tag);
+            line.innerHTML = '<span style="display:inline-block; font-size:9px; padding:0 5px; border-radius:20px; background:' + tagColor + '33; color:' + tagColor + '; margin-right:4px;">' + task.tag + '</span>' + (task.text || '(내용 없음)');
+          } else {
+            line.textContent = task.text || '(내용 없음)';
+          }
           line.title = (task.text || '(내용 없음)') + ' - 끌어서 다른 날짜로 옮길 수 있어요';
           line.draggable = true;
           line.addEventListener('dragstart', (e) => {
@@ -1610,6 +1692,20 @@ function openViewFilterPicker(anchorEl){
     select.appendChild(grp);
   }
 
+  const tags = getKnownTaskTags();
+  if(tags.length > 0){
+    const tagGrp = document.createElement('optgroup');
+    tagGrp.label = '업무 태그별';
+    tags.forEach(tag => {
+      const opt = document.createElement('option');
+      opt.value = '__tag__' + tag;
+      opt.textContent = tag;
+      if(filterMode === 'tag' && currentTagFilter === tag) opt.selected = true;
+      tagGrp.appendChild(opt);
+    });
+    select.appendChild(tagGrp);
+  }
+
   document.body.appendChild(select);
 
   let handled = false;
@@ -1630,12 +1726,19 @@ function openViewFilterPicker(anchorEl){
     if(val === '__all__'){
       filterMode = 'all';
       currentTeamFilter = '';
+      currentTagFilter = '';
     } else if(val === '__mine__'){
       filterMode = 'mine';
       currentTeamFilter = '';
+      currentTagFilter = '';
     } else if(val.indexOf('__team__') === 0){
       filterMode = 'team';
       currentTeamFilter = val.slice(8);
+      currentTagFilter = '';
+    } else if(val.indexOf('__tag__') === 0){
+      filterMode = 'tag';
+      currentTagFilter = val.slice(7);
+      currentTeamFilter = '';
     }
     renderAll();
   });
@@ -1959,6 +2062,7 @@ function renderLeft(){
     projWrap.appendChild(projHeader);
 
     proj.tasks.forEach((task, ti) => {
+      if(filterMode === 'tag' && currentTagFilter && !task.category && task.tag !== currentTagFilter) return;
       if(task.category){
         const isAllDay = task.allDay || !task.deadline;
         const catColor = getCategoryColor(task.category);
@@ -2074,6 +2178,20 @@ function renderLeft(){
         }
       });
 
+      const tagBtn = document.createElement('button');
+      tagBtn.className = 'del-btn';
+      tagBtn.textContent = task.tag ? task.tag : '#';
+      tagBtn.title = '업무 태그 (예: 도면작업)';
+      const tagColor = task.tag ? ownerColorFor(task.tag) : '#bbbbbb';
+      tagBtn.style.cssText = 'flex-shrink:0; font-size:10px; padding:4px 8px; height:30px; border-radius:20px; background:' + tagColor + '22; border:1px solid ' + tagColor + '55; color:' + tagColor + ';';
+      tagBtn.onclick = () => {
+        openTaskTagPicker(tagBtn, task.tag || '', (newTag) => {
+          task.tag = newTag;
+          renderAll();
+          apiUpdate({ id: task.id, tag: newTag });
+        });
+      };
+
       const moveBtn = document.createElement('button');
       moveBtn.className = 'del-btn';
       moveBtn.textContent = '→';
@@ -2171,6 +2289,7 @@ function renderLeft(){
       row.appendChild(check);
       row.appendChild(textInput);
       row.appendChild(deadlineInput);
+      row.appendChild(tagBtn);
       row.appendChild(moveBtn);
       row.appendChild(delBtn);
       row.appendChild(detailsInput);
@@ -2392,6 +2511,7 @@ function updateOwnerUI(){
   ownerBtn.textContent = currentOwner ? ('나: ' + getOwnerDisplay(currentOwner)) : '내 이름 설정';
   if(filterMode === 'all') viewFilterBtn.textContent = '전체보기';
   else if(filterMode === 'team' && currentTeamFilter) viewFilterBtn.textContent = '팀: ' + currentTeamFilter;
+  else if(filterMode === 'tag' && currentTagFilter) viewFilterBtn.textContent = '#' + currentTagFilter;
   else viewFilterBtn.textContent = '내 업무만';
 
   const weeklyBtn = document.getElementById('weeklyToggleBtn');
