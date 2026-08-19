@@ -467,6 +467,26 @@ function getProjOwner(proj){
   return proj.tasks[0].owner || '';
 }
 
+function countOwnerUsage(name){
+  const projNames = new Set();
+  data.forEach(g => {
+    g.projects.forEach(p => {
+      if(getProjOwner(p) === name) projNames.add(p.name);
+    });
+  });
+  return projNames.size;
+}
+
+function getOwnerUsageProjectNames(name){
+  const projNames = new Set();
+  data.forEach(g => {
+    g.projects.forEach(p => {
+      if(getProjOwner(p) === name) projNames.add(p.name);
+    });
+  });
+  return Array.from(projNames).sort((a,b) => a.localeCompare(b, 'ko'));
+}
+
 function getKnownOwners(){
   const names = new Set();
   data.forEach(g => { g.projects.forEach(p => { const o = getProjOwner(p); if(o) names.add(o); }); });
@@ -1461,6 +1481,7 @@ function openOwnerManager(anchorEl){
     }
 
     names.forEach(name => {
+      const usageCount = countOwnerUsage(name);
       const row = document.createElement('div');
       row.style.cssText = 'padding:8px 6px; border-top:1px solid #efeee9;';
 
@@ -1468,7 +1489,27 @@ function openOwnerManager(anchorEl){
       topRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:6px; font-size:13px; margin-bottom:6px;';
       const label = document.createElement('span');
       label.textContent = getOwnerDisplay(name);
-      label.style.cssText = 'flex:1; word-break:break-all; font-weight:500; color:' + ownerColorFor(name) + ';';
+      label.style.cssText = 'font-weight:500; color:' + ownerColorFor(name) + ';';
+      const countBtn = document.createElement('button');
+      countBtn.style.cssText = 'font-size:10px; padding:1px 7px; height:auto; margin-left:6px; border-radius:20px; background:none; color:' + (usageCount > 0 ? '#666' : '#c0392b') + '; border:1px solid ' + (usageCount > 0 ? '#d8d6cf' : '#e0a8a0') + ';';
+      countBtn.textContent = usageCount > 0 ? ('프로젝트 ' + usageCount + '개 ▾') : '사용 안 함';
+      const detailWrap = document.createElement('div');
+      detailWrap.style.cssText = 'display:none; font-size:11px; color:#666; padding:6px 8px; margin-bottom:6px; background:#f8f7f4; border-radius:6px;';
+      if(usageCount > 0){
+        countBtn.onclick = () => {
+          const isOpen = detailWrap.style.display === 'block';
+          detailWrap.style.display = isOpen ? 'none' : 'block';
+          if(!isOpen){
+            detailWrap.innerHTML = getOwnerUsageProjectNames(name).map(n => '· ' + n).join('<br>');
+          }
+        };
+      } else {
+        countBtn.disabled = true;
+      }
+      const labelWrap = document.createElement('span');
+      labelWrap.style.cssText = 'flex:1; word-break:break-all; display:flex; align-items:center; flex-wrap:wrap;';
+      labelWrap.appendChild(label);
+      labelWrap.appendChild(countBtn);
       const editBtn = document.createElement('button');
       editBtn.textContent = '✎';
       editBtn.title = '이름 수정';
@@ -1488,10 +1529,11 @@ function openOwnerManager(anchorEl){
         deleteOwnerGlobally(name);
         renderList();
       };
-      topRow.appendChild(label);
+      topRow.appendChild(labelWrap);
       topRow.appendChild(editBtn);
       topRow.appendChild(deleteBtn);
       row.appendChild(topRow);
+      row.appendChild(detailWrap);
 
       const teamRow = document.createElement('div');
       teamRow.style.cssText = 'display:flex; gap:6px;';
