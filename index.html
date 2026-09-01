@@ -13,8 +13,15 @@
     color: #1a1a1a;
     margin: 0;
     padding: 24px 16px;
+    position: relative;
   }
   .wrap { max-width: 1400px; margin: 0 auto; }
+  .sticky-note { position: absolute; top: 90px; right: 12px; width: 200px; background: #fff6b7; border-radius: 4px; box-shadow: 2px 4px 10px rgba(0,0,0,0.15); padding: 14px 14px 10px; transform: rotate(1.2deg); z-index: 10; }
+  .sticky-note textarea { width: 100%; min-height: 160px; border: none; background: transparent; resize: vertical; font-family: inherit; font-size: 13px; line-height: 1.5; color: #4a4222; outline: none; }
+  .sticky-note-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .sticky-note-title { font-size: 11px; color: #8a7f3d; font-weight: 600; }
+  .sticky-note-close { background: none; border: none; cursor: pointer; font-size: 13px; color: #8a7f3d; padding: 0 2px; height: auto; }
+  @media (max-width: 1650px) { .sticky-note { display: none; } }
   .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
   .topbar-left { display: flex; align-items: center; gap: 10px; }
   .title { font-size: 18px; font-weight: 600; }
@@ -107,7 +114,8 @@
     .task-block-sub { font-size: 10px; }
   }
   .board { display: grid; grid-template-columns: 0.85fr 1.4fr; gap: 18px; align-items: start; }
-  @media (max-width: 860px) { .board { grid-template-columns: 1fr; } }
+  #leftPanel { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
+  @media (max-width: 860px) { .board { grid-template-columns: 1fr; } #leftPanel { position: static; max-height: none; overflow-y: visible; } }
   .left-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 13px; color: #666; }
   .proj-card { margin-bottom: 14px; padding: 12px 14px; background: #fff; border: 1px solid #e3e1da; border-radius: 10px; }
   .proj-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
@@ -148,6 +156,13 @@
     <button id="authSubmitBtn" style="width:100%; background:#2563eb; color:#fff; border-color:#2563eb; padding:10px; font-size:14px;">입장하기</button>
   </div>
 </div>
+<div id="stickyNote" class="sticky-note" style="display:none;">
+  <div class="sticky-note-header">
+    <span class="sticky-note-title">메모</span>
+    <button class="sticky-note-close" id="stickyNoteCloseBtn" title="숨기기">✕</button>
+  </div>
+  <textarea id="stickyNoteText" placeholder="자유롭게 메모하세요"></textarea>
+</div>
 <div class="wrap">
   <div class="topbar">
     <div class="topbar-left">
@@ -155,6 +170,7 @@
       <span class="sync-status" id="syncStatus"></span>
     </div>
     <div style="display:flex; gap:8px; align-items:center; position:relative;">
+      <button id="stickyNoteToggleBtn">메모</button>
       <button id="ownerBtn">내 이름 설정</button>
       <button id="manageOwnersBtn">담당자 관리</button>
       <button id="viewFilterBtn">전체보기</button>
@@ -349,12 +365,36 @@ async function loadData(){
     if(built.corrections.length > 0){
       Promise.all(built.corrections.map(c => apiUpdate({ id: c.id, date: c.date })));
     }
+    rolloverIncompleteTasks();
   } catch(err){
     setStatus('연결 실패 - API_URL과 배포 권한을 확인해 주세요');
     document.getElementById('setupNote').style.display = 'block';
     data = [];
   }
   renderAll();
+}
+
+function rolloverIncompleteTasks(){
+  const todayLabel = formatDateLabel(new Date());
+  const todayKey = dateSortKey(todayLabel);
+  const toMove = [];
+
+  data.forEach(g => {
+    if(dateSortKey(g.date) >= todayKey) return;
+    g.projects.forEach(p => {
+      p.tasks.forEach(t => {
+        if(!t.category && !t.done){
+          toMove.push({ task: t, projectName: p.name });
+        }
+      });
+    });
+  });
+
+  if(toMove.length === 0) return;
+
+  toMove.forEach(({ task, projectName }) => {
+    moveTaskToDateAndProject(task, todayLabel, projectName);
+  });
 }
 
 const WEEKDAY_CHARS = ['일','월','화','수','목','금','토'];
@@ -2635,11 +2675,58 @@ document.addEventListener('mousedown', (e) => {
   }
 });
 
+function initStickyNote(){
+  const note = document.getElementById('stickyNote');
+  const textArea = document.getElementById('stickyNoteText');
+  const closeBtn = document.getElementById('stickyNoteCloseBtn');
+  const toggleBtn = document.getElementById('stickyNoteToggleBtn');
+
+  let savedText = '';
+  let visible = false;
+  try {
+    savedText = localStorage.getItem('boardStickyNoteText') || '';
+    visible = localStorage.getItem('boardStickyNoteVisible') === '1';
+  } catch(e){}
+
+  textArea.value = savedText;
+  note.style.display = visible ? 'block' : 'none';
+
+  let saveTimer = null;
+  textArea.addEventListener('input', () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try { localStorage.setItem('boardStickyNoteText', textArea.value); } catch(e){}
+    }, 400);
+  });
+
+  const setVisible = (v) => {
+    visible = v;
+    note.style.display = v ? 'block' : 'none';
+    try { localStorage.setItem('boardStickyNoteVisible', v ? '1' : '0'); } catch(e){}
+  };
+
+  closeBtn.onclick = () => { setVisible(false); };
+  toggleBtn.onclick = () => { setVisible(!visible); };
+}
+
 const APP_PASSWORD = 'ssd2019';
+let lastKnownTodayLabel = '';
 
 function startApp(){
+  lastKnownTodayLabel = formatDateLabel(new Date());
+  initStickyNote();
   loadData();
-  setInterval(() => { renderRight(); renderWeekly(); }, 60000);
+  setInterval(() => {
+    const nowLabel = formatDateLabel(new Date());
+    if(nowLabel !== lastKnownTodayLabel){
+      lastKnownTodayLabel = nowLabel;
+      rolloverIncompleteTasks();
+      renderAll();
+    } else {
+      renderRight();
+      renderWeekly();
+    }
+  }, 60000);
 }
 
 function tryAuth(){
