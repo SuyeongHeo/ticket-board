@@ -2676,12 +2676,18 @@ document.addEventListener('mousedown', (e) => {
 });
 
 let stickyNotes = [];
+let stickyNotesTrash = [];
+let stickyTrashOpen = false;
 let stickyNotesVisible = false;
 
 const STICKY_COLORS = ['#fff6b7', '#ffd9d4', '#d4ecff', '#d9f5d6', '#eadcf7', '#f5f0e6'];
 
 function saveStickyNotes(){
   try { localStorage.setItem('boardStickyNotes', JSON.stringify(stickyNotes)); } catch(e){}
+}
+
+function saveStickyTrash(){
+  try { localStorage.setItem('boardStickyTrash', JSON.stringify(stickyNotesTrash)); } catch(e){}
 }
 
 function escapeHtml(str){
@@ -2711,6 +2717,9 @@ function renderStickyNotes(){
     delBtn.textContent = '✕';
     delBtn.title = '이 메모 삭제';
     delBtn.onclick = () => {
+      stickyNotesTrash.unshift(stickyNotes[idx]);
+      if(stickyNotesTrash.length > 20) stickyNotesTrash = stickyNotesTrash.slice(0, 20);
+      saveStickyTrash();
       stickyNotes.splice(idx, 1);
       saveStickyNotes();
       renderStickyNotes();
@@ -2786,6 +2795,55 @@ function renderStickyNotes(){
     renderStickyNotes();
   };
   wrap.appendChild(addBtn);
+
+  const trashToggle = document.createElement('button');
+  trashToggle.className = 'sticky-add-btn';
+  trashToggle.style.cssText = 'border-style:solid; border-color:#e0ddd2; color:#999;';
+  trashToggle.textContent = stickyTrashOpen ? '휴지통 접기' : ('휴지통 (' + stickyNotesTrash.length + ')');
+  trashToggle.onclick = () => { stickyTrashOpen = !stickyTrashOpen; renderStickyNotes(); };
+  wrap.appendChild(trashToggle);
+
+  if(stickyTrashOpen){
+    if(stickyNotesTrash.length === 0){
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:11px; color:#999; padding:6px 4px; text-align:center;';
+      empty.textContent = '삭제한 메모가 없어요.';
+      wrap.appendChild(empty);
+    }
+    stickyNotesTrash.forEach((tNote, tIdx) => {
+      const tCard = document.createElement('div');
+      tCard.className = 'sticky-note';
+      tCard.style.background = tNote.color || STICKY_COLORS[0];
+      tCard.style.opacity = '0.65';
+
+      const tHeader = document.createElement('div');
+      tHeader.className = 'sticky-note-header';
+      const tTitle = document.createElement('span');
+      tTitle.className = 'sticky-note-title';
+      tTitle.textContent = '삭제됨';
+      const restoreBtn = document.createElement('button');
+      restoreBtn.className = 'sticky-note-close';
+      restoreBtn.textContent = '↩';
+      restoreBtn.title = '복원';
+      restoreBtn.onclick = () => {
+        stickyNotes.push(tNote);
+        saveStickyNotes();
+        stickyNotesTrash.splice(tIdx, 1);
+        saveStickyTrash();
+        renderStickyNotes();
+      };
+      tHeader.appendChild(tTitle);
+      tHeader.appendChild(restoreBtn);
+      tCard.appendChild(tHeader);
+
+      const preview = document.createElement('div');
+      preview.style.cssText = 'font-size:12px; color:#5a5228; max-height:60px; overflow:hidden;';
+      preview.innerHTML = tNote.html || '<span style="color:#999;">(빈 메모)</span>';
+      tCard.appendChild(preview);
+
+      wrap.appendChild(tCard);
+    });
+  }
 }
 
 function initStickyNote(){
@@ -2801,7 +2859,9 @@ function initStickyNote(){
       stickyNotes = legacy ? [{ html: escapeHtml(legacy).replace(/\n/g, '<br>'), color: STICKY_COLORS[0] }] : [];
     }
     stickyNotesVisible = localStorage.getItem('boardStickyNoteVisible') === '1';
-  } catch(e){ stickyNotes = []; }
+    const trashRaw = localStorage.getItem('boardStickyTrash');
+    stickyNotesTrash = trashRaw ? JSON.parse(trashRaw) : [];
+  } catch(e){ stickyNotes = []; stickyNotesTrash = []; }
 
   if(stickyNotes.length === 0) stickyNotes = [{ html: '', color: STICKY_COLORS[0] }];
 
