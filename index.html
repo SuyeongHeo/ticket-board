@@ -15,13 +15,20 @@
     padding: 24px 16px;
   }
   .wrap { max-width: 1400px; margin: 0 auto; }
-  .sticky-note { position: fixed; top: 90px; right: 12px; width: 200px; background: #fff6b7; border-radius: 4px; box-shadow: 2px 4px 10px rgba(0,0,0,0.15); padding: 14px 14px 10px; z-index: 10; }
-  .sticky-note textarea { width: 100%; min-height: 160px; border: none; background: transparent; resize: vertical; font-family: inherit; font-size: 13px; line-height: 1.5; color: #3a3418; outline: none; caret-color: #1a1a1a; }
-  .sticky-note textarea:focus { background: rgba(255,255,255,0.45); border-radius: 3px; }
+  .sticky-notes-wrap { position: fixed; top: 90px; right: 12px; width: 210px; max-height: calc(100vh - 110px); overflow-y: auto; z-index: 10; display: flex; flex-direction: column; gap: 10px; }
+  .sticky-note { width: 100%; box-sizing: border-box; background: #fff6b7; border-radius: 4px; box-shadow: 2px 4px 10px rgba(0,0,0,0.15); padding: 12px 12px 8px; flex-shrink: 0; }
+  .sticky-note-body { width: 100%; box-sizing: border-box; min-height: 120px; border: none; background: transparent; font-family: inherit; font-size: 13px; line-height: 1.5; color: #3a3418; outline: none; caret-color: #1a1a1a; overflow-wrap: break-word; }
+  .sticky-note-body:focus { background: rgba(255,255,255,0.45); border-radius: 3px; }
+  .sticky-note-body:empty:before { content: attr(data-placeholder); color: rgba(0,0,0,0.28); }
+  .sticky-toolbar { display: flex; gap: 3px; align-items: center; margin-bottom: 5px; }
+  .sticky-toolbar button { background: rgba(255,255,255,0.5); border: 1px solid rgba(0,0,0,0.08); border-radius: 3px; font-size: 11px; padding: 2px 6px; height: auto; cursor: pointer; color: #5a5228; line-height: 1.4; }
+  .sticky-toolbar button:hover { background: #fff; }
+  .sticky-color-dot { width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.15); cursor: pointer; padding: 0; }
   .sticky-note-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   .sticky-note-title { font-size: 11px; color: #8a7f3d; font-weight: 600; }
   .sticky-note-close { background: none; border: none; cursor: pointer; font-size: 13px; color: #8a7f3d; padding: 0 2px; height: auto; }
-  @media (max-width: 1650px) { .sticky-note { display: none; } }
+  .sticky-add-btn { background: #fff; border: 1px dashed #d8c97d; color: #8a7f3d; border-radius: 4px; padding: 8px; font-size: 12px; cursor: pointer; flex-shrink: 0; }
+  @media (max-width: 1650px) { .sticky-notes-wrap { display: none; } }
   .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
   .topbar-left { display: flex; align-items: center; gap: 10px; }
   .title { font-size: 18px; font-weight: 600; }
@@ -155,13 +162,7 @@
     <button id="authSubmitBtn" style="width:100%; background:#2563eb; color:#fff; border-color:#2563eb; padding:10px; font-size:14px;">입장하기</button>
   </div>
 </div>
-<div id="stickyNote" class="sticky-note" style="display:none;">
-  <div class="sticky-note-header">
-    <span class="sticky-note-title">메모</span>
-    <button class="sticky-note-close" id="stickyNoteCloseBtn" title="숨기기">✕</button>
-  </div>
-  <textarea id="stickyNoteText" placeholder="자유롭게 메모하세요"></textarea>
-</div>
+<div id="stickyNotesWrap" class="sticky-notes-wrap" style="display:none;"></div>
 <div class="wrap">
   <div class="topbar">
     <div class="topbar-left">
@@ -2674,38 +2675,143 @@ document.addEventListener('mousedown', (e) => {
   }
 });
 
-function initStickyNote(){
-  const note = document.getElementById('stickyNote');
-  const textArea = document.getElementById('stickyNoteText');
-  const closeBtn = document.getElementById('stickyNoteCloseBtn');
-  const toggleBtn = document.getElementById('stickyNoteToggleBtn');
+let stickyNotes = [];
+let stickyNotesVisible = false;
 
-  let savedText = '';
-  let visible = false;
-  try {
-    savedText = localStorage.getItem('boardStickyNoteText') || '';
-    visible = localStorage.getItem('boardStickyNoteVisible') === '1';
-  } catch(e){}
+const STICKY_COLORS = ['#fff6b7', '#ffd9d4', '#d4ecff', '#d9f5d6', '#eadcf7', '#f5f0e6'];
 
-  textArea.value = savedText;
-  note.style.display = visible ? 'block' : 'none';
+function saveStickyNotes(){
+  try { localStorage.setItem('boardStickyNotes', JSON.stringify(stickyNotes)); } catch(e){}
+}
 
-  let saveTimer = null;
-  textArea.addEventListener('input', () => {
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      try { localStorage.setItem('boardStickyNoteText', textArea.value); } catch(e){}
-    }, 400);
+function escapeHtml(str){
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderStickyNotes(){
+  const wrap = document.getElementById('stickyNotesWrap');
+  wrap.innerHTML = '';
+  wrap.style.display = stickyNotesVisible ? 'flex' : 'none';
+  if(!stickyNotesVisible) return;
+
+  stickyNotes.forEach((note, idx) => {
+    const card = document.createElement('div');
+    card.className = 'sticky-note';
+    card.style.background = note.color || STICKY_COLORS[0];
+
+    const header = document.createElement('div');
+    header.className = 'sticky-note-header';
+    const title = document.createElement('span');
+    title.className = 'sticky-note-title';
+    title.textContent = '메모 ' + (idx + 1);
+    const delBtn = document.createElement('button');
+    delBtn.className = 'sticky-note-close';
+    delBtn.textContent = '✕';
+    delBtn.title = '이 메모 삭제';
+    delBtn.onclick = () => {
+      stickyNotes.splice(idx, 1);
+      saveStickyNotes();
+      renderStickyNotes();
+    };
+    header.appendChild(title);
+    header.appendChild(delBtn);
+    card.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'sticky-note-body';
+    body.contentEditable = 'true';
+    body.setAttribute('data-placeholder', '자유롭게 메모하세요');
+    body.innerHTML = note.html || '';
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'sticky-toolbar';
+
+    const mkFormatBtn = (label, cmd, style) => {
+      const b = document.createElement('button');
+      b.innerHTML = label;
+      b.title = cmd;
+      if(style) b.style.cssText += style;
+      b.onmousedown = (e) => { e.preventDefault(); };
+      b.onclick = () => {
+        body.focus();
+        document.execCommand(cmd, false, null);
+        stickyNotes[idx].html = body.innerHTML;
+        saveStickyNotes();
+      };
+      return b;
+    };
+    toolbar.appendChild(mkFormatBtn('<b>B</b>', 'bold'));
+    toolbar.appendChild(mkFormatBtn('<i>I</i>', 'italic'));
+    toolbar.appendChild(mkFormatBtn('<s>S</s>', 'strikeThrough'));
+
+    const spacer = document.createElement('span');
+    spacer.style.cssText = 'flex:1;';
+    toolbar.appendChild(spacer);
+
+    STICKY_COLORS.forEach(color => {
+      const dot = document.createElement('button');
+      dot.className = 'sticky-color-dot';
+      dot.style.background = color;
+      dot.title = '색상 변경';
+      dot.onmousedown = (e) => { e.preventDefault(); };
+      dot.onclick = () => {
+        stickyNotes[idx].color = color;
+        card.style.background = color;
+        saveStickyNotes();
+      };
+      toolbar.appendChild(dot);
+    });
+
+    card.appendChild(toolbar);
+
+    let saveTimer = null;
+    body.addEventListener('input', () => {
+      stickyNotes[idx].html = body.innerHTML;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveStickyNotes, 400);
+    });
+    card.appendChild(body);
+
+    wrap.appendChild(card);
   });
 
-  const setVisible = (v) => {
-    visible = v;
-    note.style.display = v ? 'block' : 'none';
-    try { localStorage.setItem('boardStickyNoteVisible', v ? '1' : '0'); } catch(e){}
+  const addBtn = document.createElement('button');
+  addBtn.className = 'sticky-add-btn';
+  addBtn.textContent = '+ 메모 추가';
+  addBtn.onclick = () => {
+    stickyNotes.push({ html: '', color: STICKY_COLORS[0] });
+    saveStickyNotes();
+    renderStickyNotes();
+  };
+  wrap.appendChild(addBtn);
+}
+
+function initStickyNote(){
+  try {
+    const raw = localStorage.getItem('boardStickyNotes');
+    if(raw){
+      const parsed = JSON.parse(raw);
+      stickyNotes = parsed.map(n => (typeof n === 'string')
+        ? { html: escapeHtml(n).replace(/\n/g, '<br>'), color: STICKY_COLORS[0] }
+        : n);
+    } else {
+      const legacy = localStorage.getItem('boardStickyNoteText');
+      stickyNotes = legacy ? [{ html: escapeHtml(legacy).replace(/\n/g, '<br>'), color: STICKY_COLORS[0] }] : [];
+    }
+    stickyNotesVisible = localStorage.getItem('boardStickyNoteVisible') === '1';
+  } catch(e){ stickyNotes = []; }
+
+  if(stickyNotes.length === 0) stickyNotes = [{ html: '', color: STICKY_COLORS[0] }];
+
+  document.getElementById('stickyNoteToggleBtn').onclick = () => {
+    stickyNotesVisible = !stickyNotesVisible;
+    try { localStorage.setItem('boardStickyNoteVisible', stickyNotesVisible ? '1' : '0'); } catch(e){}
+    renderStickyNotes();
   };
 
-  closeBtn.onclick = () => { setVisible(false); };
-  toggleBtn.onclick = () => { setVisible(!visible); };
+  renderStickyNotes();
 }
 
 const APP_PASSWORD = 'ssd2019';
