@@ -170,6 +170,7 @@
       <span class="sync-status" id="syncStatus"></span>
     </div>
     <div style="display:flex; gap:8px; align-items:center; position:relative;">
+      <button id="rolloverBtn" title="어제 미완료 할 일을 오늘로 옮기기">어제 미완료 가져오기</button>
       <button id="stickyNoteToggleBtn">메모</button>
       <button id="ownerBtn">내 이름 설정</button>
       <button id="manageOwnersBtn">담당자 관리</button>
@@ -365,7 +366,6 @@ async function loadData(){
     if(built.corrections.length > 0){
       Promise.all(built.corrections.map(c => apiUpdate({ id: c.id, date: c.date })));
     }
-    rolloverIncompleteTasks();
   } catch(err){
     setStatus('연결 실패 - API_URL과 배포 권한을 확인해 주세요');
     document.getElementById('setupNote').style.display = 'block';
@@ -375,12 +375,14 @@ async function loadData(){
 }
 
 function rolloverIncompleteTasks(){
-  const todayLabel = formatDateLabel(new Date());
-  const todayKey = dateSortKey(todayLabel);
-  const toMove = [];
+  const today = new Date();
+  const todayLabel = formatDateLabel(today);
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  const yesterdayLabel = formatDateLabel(yesterday);
 
+  const toMove = [];
   data.forEach(g => {
-    if(dateSortKey(g.date) >= todayKey) return;
+    if(g.date !== yesterdayLabel) return;
     g.projects.forEach(p => {
       p.tasks.forEach(t => {
         if(!t.category && !t.done){
@@ -390,11 +392,18 @@ function rolloverIncompleteTasks(){
     });
   });
 
-  if(toMove.length === 0) return;
+  if(toMove.length === 0){
+    alert('어제(' + yesterdayLabel + ') 미완료 할 일이 없어요.');
+    return;
+  }
+
+  const ok = confirm('어제(' + yesterdayLabel + ')의 미완료 할 일 ' + toMove.length + '건을 오늘(' + todayLabel + ')로 옮길까요?');
+  if(!ok) return;
 
   toMove.forEach(({ task, projectName }) => {
     moveTaskToDateAndProject(task, todayLabel, projectName);
   });
+  renderAll();
 }
 
 const WEEKDAY_CHARS = ['일','월','화','수','목','금','토'];
@@ -2643,6 +2652,7 @@ document.getElementById('manageOwnersBtn').onclick = () => {
 document.getElementById('viewFilterBtn').onclick = () => {
   openViewFilterPicker(document.getElementById('viewFilterBtn'));
 };
+document.getElementById('rolloverBtn').onclick = () => { rolloverIncompleteTasks(); };
 document.getElementById('todayBtn').onclick = () => { selectedDate = new Date(); ensureGroupForSelectedDate(); renderAll(); };
 
 const searchInputEl = document.getElementById('searchInput');
@@ -2916,7 +2926,6 @@ function startApp(){
     const nowLabel = formatDateLabel(new Date());
     if(nowLabel !== lastKnownTodayLabel){
       lastKnownTodayLabel = nowLabel;
-      rolloverIncompleteTasks();
       renderAll();
     } else {
       renderRight();
