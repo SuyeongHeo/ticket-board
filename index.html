@@ -2703,6 +2703,7 @@ function renderStickyNotes(){
   if(!stickyNotesVisible) return;
 
   stickyNotes.forEach((note, idx) => {
+    const collapsed = !!note.collapsed;
     const card = document.createElement('div');
     card.className = 'sticky-note';
     card.style.background = note.color || STICKY_COLORS[0];
@@ -2712,11 +2713,33 @@ function renderStickyNotes(){
     const title = document.createElement('span');
     title.className = 'sticky-note-title';
     title.textContent = '메모 ' + (idx + 1);
-    const delBtn = document.createElement('button');
-    delBtn.className = 'sticky-note-close';
-    delBtn.textContent = '✕';
-    delBtn.title = '이 메모 삭제';
-    delBtn.onclick = () => {
+    title.style.cursor = 'pointer';
+    title.title = collapsed ? '펼치기' : '접기';
+    title.onclick = () => {
+      stickyNotes[idx].collapsed = !collapsed;
+      saveStickyNotes();
+      renderStickyNotes();
+    };
+
+    const headerBtns = document.createElement('span');
+    headerBtns.style.cssText = 'display:flex; gap:2px; align-items:center;';
+
+    const collapseBtn = document.createElement('button');
+    collapseBtn.className = 'sticky-note-close';
+    collapseBtn.textContent = collapsed ? '▸' : '▾';
+    collapseBtn.title = collapsed ? '펼치기' : '접기';
+    collapseBtn.onclick = () => {
+      stickyNotes[idx].collapsed = !collapsed;
+      saveStickyNotes();
+      renderStickyNotes();
+    };
+
+    const trashBtn = document.createElement('button');
+    trashBtn.className = 'sticky-note-close';
+    trashBtn.textContent = '✕';
+    trashBtn.title = '이 메모 삭제 (휴지통으로 이동)';
+    trashBtn.style.cssText += 'color:#c0392b; font-weight:700;';
+    trashBtn.onclick = () => {
       stickyNotesTrash.unshift(stickyNotes[idx]);
       if(stickyNotesTrash.length > 20) stickyNotesTrash = stickyNotesTrash.slice(0, 20);
       saveStickyTrash();
@@ -2724,9 +2747,17 @@ function renderStickyNotes(){
       saveStickyNotes();
       renderStickyNotes();
     };
+
+    headerBtns.appendChild(trashBtn);
+    headerBtns.appendChild(collapseBtn);
     header.appendChild(title);
-    header.appendChild(delBtn);
+    header.appendChild(headerBtns);
     card.appendChild(header);
+
+    if(collapsed){
+      wrap.appendChild(card);
+      return;
+    }
 
     const body = document.createElement('div');
     body.className = 'sticky-note-body';
