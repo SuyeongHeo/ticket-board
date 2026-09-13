@@ -5,10 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>티켓 업무 보드</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📋</text></svg>">
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css" />
 <style>
   * { box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.2px;
     background: #f5f4f0;
     color: #1a1a1a;
     margin: 0;
@@ -17,7 +20,7 @@
   .wrap { max-width: 1400px; margin: 0 auto; }
   .sticky-notes-wrap { position: fixed; top: 90px; right: 12px; width: 210px; max-height: calc(100vh - 110px); overflow-y: auto; z-index: 10; display: flex; flex-direction: column; gap: 10px; }
   .sticky-note { width: 100%; box-sizing: border-box; background: #fff6b7; border-radius: 4px; box-shadow: 2px 4px 10px rgba(0,0,0,0.15); padding: 12px 12px 8px; flex-shrink: 0; }
-  .sticky-note-body { width: 100%; box-sizing: border-box; min-height: 120px; border: none; background: transparent; font-family: inherit; font-size: 13px; line-height: 1.5; color: #3a3418; outline: none; caret-color: #1a1a1a; overflow-wrap: break-word; }
+  .sticky-note-body { width: 100%; box-sizing: border-box; min-height: 40px; border: none; background: transparent; font-family: inherit; font-size: 13px; line-height: 1.5; color: #3a3418; outline: none; caret-color: #1a1a1a; overflow-wrap: break-word; }
   .sticky-note-body:focus { background: rgba(255,255,255,0.45); border-radius: 3px; }
   .sticky-note-body:empty:before { content: attr(data-placeholder); color: rgba(0,0,0,0.28); }
   .sticky-toolbar { display: flex; gap: 3px; align-items: center; margin-bottom: 5px; }
@@ -33,6 +36,9 @@
   .topbar-left { display: flex; align-items: center; gap: 10px; }
   .title { font-size: 18px; font-weight: 600; }
   .sync-status { font-size: 12px; color: #888; }
+  button, input, textarea, select {
+    font-family: inherit;
+  }
   button {
     background: #fff;
     border: 1px solid #d8d6cf;
@@ -121,18 +127,20 @@
     .task-block-title { font-size: 13px; }
     .task-block-sub { font-size: 10px; }
   }
-  .board { display: grid; grid-template-columns: 0.85fr 1.4fr; gap: 18px; align-items: start; }
-  @media (max-width: 860px) { .board { grid-template-columns: 1fr; } }
+  .board { display: block; }
   .left-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 13px; color: #666; }
-  .proj-card { margin-bottom: 14px; padding: 12px 14px; background: #fff; border: 1px solid #e3e1da; border-radius: 10px; }
+  .proj-grid { display: flex; gap: 16px; align-items: flex-start; overflow-x: auto; padding-bottom: 10px; }
+  .proj-card { flex: 0 0 calc((100% - 32px) / 3); min-width: 280px; padding: 12px 14px; background: #fff; border: 1px solid #e3e1da; border-radius: 10px; }
   .proj-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-  .proj-name { font-size: 13px; font-weight: 600; }
+  .proj-name { font-size: 16px; font-weight: 700; }
   .proj-btns { display: flex; gap: 6px; }
   .proj-btns button { font-size: 11px; padding: 4px 9px; }
-  .task-row { display: flex; align-items: center; gap: 6px; padding: 7px 0; border-top: 1px solid #efeee9; flex-wrap: wrap; }
+  .task-row { display: flex; align-items: center; gap: 6px; padding: 8px 10px; margin-bottom: 6px; border: 1px solid transparent; border-radius: 8px; flex-wrap: wrap; }
   .task-row input[type="text"] { font-size: 13px; height: 32px; border: 1px solid #d8d6cf; border-radius: 6px; padding: 0 8px; }
-  .task-text { flex: 1 1 130px; min-width: 0; }
-  .task-text.done { text-decoration: line-through; color: #999; }
+  .task-text { flex: 1 1 0; min-width: 0; font-size: 14px !important; font-weight: 600; color: #1a1a1a; height: 34px !important; border: 1px solid transparent !important; background: transparent; padding: 0 6px !important; }
+  .task-text:hover { background: #fff; }
+  .task-text:focus { background: #fff; border-color: #d8d6cf !important; }
+  .task-text.done { text-decoration: line-through; color: #999; font-weight: 400; }
   .task-assignee { width: 56px; flex-shrink: 0; }
   .task-deadline { width: 130px; flex-shrink: 0; font-family: inherit; font-size: 13px; height: 32px; border: 1px solid #d8d6cf; border-radius: 6px; padding: 0 8px; color: #1a1a1a; }
   .task-row input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; }
@@ -191,12 +199,11 @@
   <datalist id="timeSlots"></datalist>
   <div class="board" id="dayBoardSection">
     <div id="leftPanel"></div>
-    <div class="right-panel" id="rightPanel"></div>
   </div>
 </div>
 
 <script>
-const API_URL = "https://script.google.com/macros/s/AKfycbw2wmX6t1c5ha8Bsf29mvDoJlNB3EXq67C6SQLj8kCiK-jTjBLrFu7e_c4PZmopDCqsbA/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbzonRgrcqT6osXrhP0IM24ZmynxbYT4_p6HpytL-VpW8I8Re2ZY0UrIuc4duPGesjHIZA/exec";
 
 let data = [];
 let activeIdx = 0;
@@ -376,6 +383,11 @@ async function loadData(){
 }
 
 function rolloverIncompleteTasks(){
+  if(!currentOwner){
+    alert('먼저 상단 "내 이름 설정"에서 본인 이름을 선택해 주세요.');
+    return;
+  }
+
   const today = new Date();
   const todayLabel = formatDateLabel(today);
   const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
@@ -385,20 +397,22 @@ function rolloverIncompleteTasks(){
   data.forEach(g => {
     if(g.date !== yesterdayLabel) return;
     g.projects.forEach(p => {
+      const projOwner = getProjOwner(p);
       p.tasks.forEach(t => {
-        if(!t.category && !t.done){
-          toMove.push({ task: t, projectName: p.name });
-        }
+        if(t.category || t.done) return;
+        const taskOwner = t.owner || projOwner;
+        if(!ownerIncludesPerson(taskOwner, currentOwner)) return;
+        toMove.push({ task: t, projectName: p.name });
       });
     });
   });
 
   if(toMove.length === 0){
-    alert('어제(' + yesterdayLabel + ') 미완료 할 일이 없어요.');
+    alert('어제(' + yesterdayLabel + ') 내 미완료 할 일이 없어요.');
     return;
   }
 
-  const ok = confirm('어제(' + yesterdayLabel + ')의 미완료 할 일 ' + toMove.length + '건을 오늘(' + todayLabel + ')로 옮길까요?');
+  const ok = confirm('어제(' + yesterdayLabel + ')의 내 미완료 할 일 ' + toMove.length + '건을 오늘(' + todayLabel + ')로 옮길까요?');
   if(!ok) return;
 
   toMove.forEach(({ task, projectName }) => {
@@ -736,13 +750,23 @@ function renderWeekly(){
   nav.className = 'weekly-nav';
   const prevBtn = document.createElement('button');
   prevBtn.textContent = '◀ 이전 주';
-  prevBtn.onclick = () => { selectedDate = new Date(selectedDate.getTime() - 7*86400000); ensureGroupForSelectedDate(); renderAll(); };
+  prevBtn.onclick = () => {
+    const target = new Date(selectedDate.getTime() - 7*86400000);
+    selectedDate = getWeekDates(target)[0];
+    ensureGroupForSelectedDate();
+    renderAll();
+  };
   const titleSpan = document.createElement('span');
   titleSpan.className = 'weekly-nav-title';
   titleSpan.textContent = (week[0].getMonth()+1) + '/' + week[0].getDate() + ' ~ ' + (week[6].getMonth()+1) + '/' + week[6].getDate();
   const nextBtn = document.createElement('button');
   nextBtn.textContent = '다음 주 ▶';
-  nextBtn.onclick = () => { selectedDate = new Date(selectedDate.getTime() + 7*86400000); ensureGroupForSelectedDate(); renderAll(); };
+  nextBtn.onclick = () => {
+    const target = new Date(selectedDate.getTime() + 7*86400000);
+    selectedDate = getWeekDates(target)[0];
+    ensureGroupForSelectedDate();
+    renderAll();
+  };
   nav.appendChild(prevBtn);
   nav.appendChild(titleSpan);
   nav.appendChild(nextBtn);
@@ -888,6 +912,7 @@ function renderWeekly(){
         regularTasks.forEach(task => {
           const line = document.createElement('div');
           line.className = 'weekly-task-line';
+          line.dataset.taskId = task.id;
           line.style.background = accentColor + '22';
           line.style.borderLeft = '3px solid ' + accentColor;
           if(task.done){ line.style.textDecoration = 'line-through'; line.style.opacity = '0.55'; }
@@ -1056,7 +1081,9 @@ function renderTabs(){
 
   setTimeout(() => {
     const selectedEl = strip.querySelector('.day-cell.selected');
-    if(selectedEl) selectedEl.scrollIntoView({ inline: 'center', block: 'nearest' });
+    if(selectedEl){
+      strip.scrollLeft = selectedEl.offsetLeft - (strip.clientWidth / 2) + (selectedEl.offsetWidth / 2);
+    }
   }, 0);
 }
 
@@ -1082,6 +1109,9 @@ let projectNameOrder = [];
 let ownerTeams = {};
 let settingsLoaded = false;
 
+let allUserNotes = {};
+let allUserNotesTrash = {};
+
 async function loadSettings(){
   try {
     const res = await apiGetSettings();
@@ -1089,13 +1119,18 @@ async function loadSettings(){
     projectNameOrder = res.projectNameOrder || [];
     ownerTeams = res.ownerTeams || {};
     knownOwnerNames = res.knownOwnerNames || [];
+    allUserNotes = res.userNotes || {};
+    allUserNotesTrash = res.userNotesTrash || {};
   } catch(e){
     hiddenProjectNames = [];
     projectNameOrder = [];
     ownerTeams = {};
     knownOwnerNames = [];
+    allUserNotes = {};
+    allUserNotesTrash = {};
   }
   settingsLoaded = true;
+  applyLoadedNotes();
 }
 
 function saveHiddenProjectNames(){
@@ -2102,6 +2137,10 @@ function renderLeft(){
     left.appendChild(note);
   }
 
+  const projGrid = document.createElement('div');
+  projGrid.className = 'proj-grid';
+  left.appendChild(projGrid);
+
   visibleProjects.forEach((proj) => {
     const accentColor = colorFor(proj.name);
     const projOwner = getProjOwner(proj);
@@ -2115,7 +2154,8 @@ function renderLeft(){
     nameWrap.style.cssText = 'display:flex; align-items:center; gap:6px; flex-wrap:wrap;';
     const nameSpan = document.createElement('span');
     nameSpan.className = 'proj-name';
-    nameSpan.textContent = '[' + proj.name + ']';
+    nameSpan.textContent = proj.name;
+    nameSpan.style.color = accentColor;
     nameWrap.appendChild(nameSpan);
     const ownerTag = document.createElement('button');
     ownerTag.textContent = projOwner ? getOwnerDisplay(projOwner) : '담당자 없음';
@@ -2207,6 +2247,8 @@ function renderLeft(){
 
       const row = document.createElement('div');
       row.className = 'task-row';
+      row.style.background = accentColor + '14';
+      row.style.borderColor = accentColor + '33';
 
       const check = document.createElement('input');
       check.type = 'checkbox';
@@ -2214,12 +2256,9 @@ function renderLeft(){
       check.onchange = async () => {
         task.done = check.checked;
         textInput.className = 'task-text' + (task.done ? ' done' : '');
-        withScrollLock(() => {
-          renderTabs();
-          renderProgress();
-          renderRight();
-          if(weeklyViewOpen) renderWeekly();
-        });
+        renderTabs();
+        renderProgress();
+        updateWeeklyTaskLine(task);
         await apiUpdate({ id: task.id, done: task.done });
       };
 
@@ -2235,44 +2274,15 @@ function renderLeft(){
       detailsInput.className = 'task-details';
       detailsInput.value = task.details || '';
       detailsInput.placeholder = '';
-      detailsInput.rows = 2;
-      detailsInput.style.cssText = 'flex:1 1 100%; width:100%; font-size:13px; line-height:1.5; color:#1a1a1a; border:1px solid #d8d6cf; border-radius:6px; padding:8px 10px; margin-top:4px; resize:vertical; font-family:inherit;';
-      if(task.detailsHeightPx){ detailsInput.style.height = task.detailsHeightPx; }
-      detailsInput.oninput = () => { task.details = detailsInput.value; };
-      detailsInput.onblur = async () => { await apiUpdate({ id: task.id, details: task.details }); };
-      const captureDetailsHeight = () => {
-        if(detailsInput.style.height){ task.detailsHeightPx = detailsInput.style.height; }
+      detailsInput.rows = 1;
+      detailsInput.style.cssText = 'flex:1 1 100%; width:calc(100% - 24px); margin-left:24px; font-size:12.5px; line-height:1.55; color:#4a4a4a; border:none; border-left:2px solid ' + accentColor + '55; border-radius:0; padding:2px 0 2px 8px; margin-top:2px; resize:none; overflow:hidden; font-family:inherit; box-sizing:border-box; background:transparent;';
+      const autoGrowDetails = () => {
+        detailsInput.style.height = 'auto';
+        detailsInput.style.height = Math.max(36, detailsInput.scrollHeight) + 'px';
       };
-      detailsInput.addEventListener('mouseup', captureDetailsHeight);
-      detailsInput.addEventListener('touchend', captureDetailsHeight);
-      detailsInput.addEventListener('mouseleave', captureDetailsHeight);
-
-      const deadlineInput = document.createElement('input');
-      deadlineInput.type = 'time';
-      deadlineInput.value = to24hTime(task.deadline);
-      deadlineInput.setAttribute('list', 'timeSlots');
-      deadlineInput.className = 'task-deadline';
-      deadlineInput.addEventListener('change', () => {
-        task.deadline = deadlineInput.value;
-        renderRight();
-        apiUpdate({ id: task.id, deadline: task.deadline });
-      });
-      let deadlineJustClosed = false;
-      deadlineInput.addEventListener('mousedown', (e) => {
-        if(document.activeElement === deadlineInput){
-          e.preventDefault();
-          try { if(deadlineInput.hidePicker) deadlineInput.hidePicker(); } catch(err){}
-          deadlineInput.blur();
-          deadlineJustClosed = true;
-          setTimeout(() => { deadlineJustClosed = false; }, 60);
-        }
-      });
-      deadlineInput.addEventListener('click', (e) => {
-        if(deadlineJustClosed){
-          e.preventDefault();
-          deadlineInput.blur();
-        }
-      });
+      detailsInput.oninput = () => { task.details = detailsInput.value; autoGrowDetails(); };
+      detailsInput.onblur = async () => { await apiUpdate({ id: task.id, details: task.details }); };
+      requestAnimationFrame(autoGrowDetails);
 
       const tagBtn = document.createElement('button');
       tagBtn.className = 'del-btn';
@@ -2384,7 +2394,6 @@ function renderLeft(){
 
       row.appendChild(check);
       row.appendChild(textInput);
-      row.appendChild(deadlineInput);
       row.appendChild(tagBtn);
       row.appendChild(moveBtn);
       row.appendChild(delBtn);
@@ -2392,12 +2401,13 @@ function renderLeft(){
       projWrap.appendChild(row);
     });
 
-    left.appendChild(projWrap);
+    projGrid.appendChild(projWrap);
   });
 }
 
 function renderRight(){
   const right = document.getElementById('rightPanel');
+  if(!right) return;
   right.innerHTML = '';
   const dateGroup = data[activeIdx];
 
@@ -2575,6 +2585,19 @@ function renderRight(){
   }
 }
 
+function updateWeeklyTaskLine(task){
+  if(!weeklyViewOpen) return;
+  const line = document.querySelector('.weekly-task-line[data-task-id="' + task.id + '"]');
+  if(!line) return;
+  if(task.done){
+    line.style.textDecoration = 'line-through';
+    line.style.opacity = '0.55';
+  } else {
+    line.style.textDecoration = 'none';
+    line.style.opacity = '1';
+  }
+}
+
 function renderProgress(){
   const wrap = document.getElementById('progressBar');
   const dateGroup = data[activeIdx];
@@ -2620,13 +2643,22 @@ function withScrollLock(fn){
   const prevMinHeight = document.body.style.minHeight;
   document.body.style.minHeight = document.documentElement.scrollHeight + 'px';
 
+  const projGridBefore = document.querySelector('.proj-grid');
+  const projGridScrollLeft = projGridBefore ? projGridBefore.scrollLeft : 0;
+
   fn();
 
-  window.scrollTo(scrollX, scrollY);
-  requestAnimationFrame(() => {
+  const restore = () => {
     window.scrollTo(scrollX, scrollY);
+    const projGridAfter = document.querySelector('.proj-grid');
+    if(projGridAfter && projGridScrollLeft) projGridAfter.scrollLeft = projGridScrollLeft;
+  };
+
+  restore();
+  requestAnimationFrame(() => {
+    restore();
     document.body.style.minHeight = prevMinHeight;
-    requestAnimationFrame(() => { window.scrollTo(scrollX, scrollY); });
+    requestAnimationFrame(restore);
   });
 }
 
@@ -2648,6 +2680,7 @@ document.getElementById('weeklyToggleBtn').onclick = () => {
 document.getElementById('ownerBtn').onclick = () => {
   openOwnerPicker(document.getElementById('ownerBtn'), currentOwner, (name) => {
     setCurrentOwner(name);
+    applyLoadedNotes();
     renderAll();
   });
 };
@@ -2698,11 +2731,23 @@ let stickyNotesVisible = false;
 const STICKY_COLORS = ['#fff6b7', '#ffd9d4', '#d4ecff', '#d9f5d6', '#eadcf7', '#f5f0e6'];
 
 function saveStickyNotes(){
-  try { localStorage.setItem('boardStickyNotes', JSON.stringify(stickyNotes)); } catch(e){}
+  if(!currentOwner) return;
+  allUserNotes[currentOwner] = stickyNotes;
+  apiSetSettings({ noteOwner: currentOwner, notes: stickyNotes });
 }
 
 function saveStickyTrash(){
-  try { localStorage.setItem('boardStickyTrash', JSON.stringify(stickyNotesTrash)); } catch(e){}
+  if(!currentOwner) return;
+  allUserNotesTrash[currentOwner] = stickyNotesTrash;
+  apiSetSettings({ noteOwner: currentOwner, notesTrash: stickyNotesTrash });
+}
+
+function applyLoadedNotes(){
+  if(!currentOwner) return;
+  const mine = allUserNotes[currentOwner];
+  stickyNotes = (mine && mine.length > 0) ? mine : [{ html: '', color: STICKY_COLORS[0] }];
+  stickyNotesTrash = allUserNotesTrash[currentOwner] || [];
+  renderStickyNotes();
 }
 
 function escapeHtml(str){
@@ -2893,25 +2938,17 @@ function renderStickyNotes(){
 }
 
 function initStickyNote(){
+  stickyNotes = [{ html: '', color: STICKY_COLORS[0] }];
+  stickyNotesTrash = [];
   try {
-    const raw = localStorage.getItem('boardStickyNotes');
-    if(raw){
-      const parsed = JSON.parse(raw);
-      stickyNotes = parsed.map(n => (typeof n === 'string')
-        ? { html: escapeHtml(n).replace(/\n/g, '<br>'), color: STICKY_COLORS[0] }
-        : n);
-    } else {
-      const legacy = localStorage.getItem('boardStickyNoteText');
-      stickyNotes = legacy ? [{ html: escapeHtml(legacy).replace(/\n/g, '<br>'), color: STICKY_COLORS[0] }] : [];
-    }
     stickyNotesVisible = localStorage.getItem('boardStickyNoteVisible') === '1';
-    const trashRaw = localStorage.getItem('boardStickyTrash');
-    stickyNotesTrash = trashRaw ? JSON.parse(trashRaw) : [];
-  } catch(e){ stickyNotes = []; stickyNotesTrash = []; }
-
-  if(stickyNotes.length === 0) stickyNotes = [{ html: '', color: STICKY_COLORS[0] }];
+  } catch(e){ stickyNotesVisible = false; }
 
   document.getElementById('stickyNoteToggleBtn').onclick = () => {
+    if(!currentOwner){
+      alert('메모를 쓰려면 먼저 상단 "내 이름 설정"에서 본인 이름을 선택해 주세요.');
+      return;
+    }
     stickyNotesVisible = !stickyNotesVisible;
     try { localStorage.setItem('boardStickyNoteVisible', stickyNotesVisible ? '1' : '0'); } catch(e){}
     renderStickyNotes();
