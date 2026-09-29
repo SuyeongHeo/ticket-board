@@ -528,7 +528,19 @@ function setCurrentOwner(name){
 
 function getProjOwner(proj){
   if(!proj.tasks || proj.tasks.length === 0) return '';
-  return proj.tasks[0].owner || '';
+  for(const t of proj.tasks){
+    if(t.owner) return t.owner;
+  }
+  // 이 날짜의 할 일에 담당자가 비어 있으면, 다른 날짜의 같은 콘서트에서 담당자를 찾음
+  for(const g of data){
+    for(const p of g.projects){
+      if(p.name !== proj.name) continue;
+      for(const t of p.tasks){
+        if(t.owner) return t.owner;
+      }
+    }
+  }
+  return '';
 }
 
 function countOwnerUsage(name){
@@ -589,16 +601,31 @@ function getVisibleProjects(dateGroup){
   return dateGroup.projects.filter(p => { const o = getProjOwner(p); return !o || ownerIncludesPerson(o, currentOwner); });
 }
 
+function getTaskEffectiveOwner(task){
+  if(task.owner) return task.owner;
+  if(!task.project) return '';
+  for(const g of data){
+    for(const p of g.projects){
+      if(p.name !== task.project) continue;
+      for(const t of p.tasks){
+        if(t.owner) return t.owner;
+      }
+    }
+  }
+  return '';
+}
+
 function isTaskVisible(task){
   if(filterMode === 'all') return true;
   if(filterMode === 'tag' && currentTagFilter){
     return task.tag === currentTagFilter;
   }
+  const effOwner = getTaskEffectiveOwner(task);
   if(filterMode === 'team' && currentTeamFilter){
-    return !task.owner || ownerBelongsToTeam(task.owner, currentTeamFilter);
+    return !effOwner || ownerBelongsToTeam(effOwner, currentTeamFilter);
   }
   if(!currentOwner) return true;
-  return !task.owner || ownerIncludesPerson(task.owner, currentOwner);
+  return !effOwner || ownerIncludesPerson(effOwner, currentOwner);
 }
 
 function getKnownTeams(){
