@@ -341,10 +341,25 @@ function sortDataByDate(){
   data.sort((a,b) => dateSortKey(a.date) - dateSortKey(b.date));
 }
 
+function normalizeTimeValue(v){
+  if(!v) return v;
+  const s = String(v);
+  // 구글 시트가 시간을 날짜 데이터로 저장한 경우(예: "1899-12-30T11:32:08.000Z")를 보정
+  if(/^\d{4}-\d{2}-\d{2}T/.test(s)){
+    const d = new Date(s);
+    if(!isNaN(d.getTime())){
+      return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+    }
+  }
+  return v;
+}
+
 function buildNested(flatTasks){
   const dateMap = {};
   const corrections = [];
   flatTasks.forEach(t => {
+    t.deadline = normalizeTimeValue(t.deadline);
+    t.endTime = normalizeTimeValue(t.endTime);
     const canon = canonicalizeDateLabel(t.date);
     if(canon !== t.date){ corrections.push({ id: t.id, date: canon }); }
     t.date = canon;
