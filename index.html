@@ -180,7 +180,6 @@
     </div>
     <div style="display:flex; gap:8px; align-items:center; position:relative;">
       <button id="rolloverBtn" title="어제 미완료 할 일을 오늘로 옮기기">어제 미완료 가져오기</button>
-      <button id="showDateBtn" title="공연일을 입력하면 해야 할 일과 기한이 자동으로 계산돼요">🎫 공연일 업무</button>
       <button id="stickyNoteToggleBtn">메모</button>
       <button id="ownerBtn">내 이름 설정</button>
       <button id="manageOwnersBtn">담당자 관리</button>
@@ -594,18 +593,24 @@ function buildNested(rawTasks){
     t.date = canon;
     // 일정의 종료일에도 같은 연도 보정을 적용
     if(t.endDate && /\d{1,2}\s*\/\s*\d{1,2}/.test(String(t.endDate))){
-      let endCanon;
+      const sd = parseDateLabel(canon);
+      let ed;
       if(hasYearInLabel(t.endDate)){
-        endCanon = canonicalizeDateLabel(t.endDate);
+        ed = parseDateLabel(t.endDate);
       } else {
-        // 연도 없는 종료일은 시작일 연도를 따라가되, 해를 넘기는 일정이면 +1년
-        const sd = parseDateLabel(canon);
+        // 연도 없는 종료일은 시작일과 같은 해로 두고,
+        // 연말(11~12월) 시작 → 연초(1~3월) 종료인 경우에만 다음 해로 넘김
         const em = String(t.endDate).match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
-        let ey = sd.getFullYear();
         const emo = parseInt(em[1],10), eda = parseInt(em[2],10);
-        if(emo * 100 + eda < (sd.getMonth()+1) * 100 + sd.getDate()) ey += 1;
-        endCanon = formatDateLabel(new Date(ey, emo-1, eda));
+        let ey = sd.getFullYear();
+        const startKey = (sd.getMonth()+1) * 100 + sd.getDate();
+        const endKey = emo * 100 + eda;
+        if(endKey < startKey && sd.getMonth() >= 10 && emo <= 3) ey += 1;
+        ed = new Date(ey, emo-1, eda);
       }
+      // 종료일이 시작일보다 앞서면 잘못된 값이므로 시작일로 맞춤
+      if(ed < sd) ed = sd;
+      const endCanon = formatDateLabel(ed);
       if(endCanon !== t.endDate){ fix.endDate = endCanon; }
       t.endDate = endCanon;
     }
@@ -878,20 +883,26 @@ function ownerIncludesPerson(ownerStr, person){
   return parts.includes(person);
 }
 
+// 콘서트명 관리에서 숨긴 콘서트는 보드에도 나오지 않게 함
+function isProjectHidden(name){
+  return hiddenProjectNames.indexOf(name) !== -1;
+}
+
 function getVisibleProjects(dateGroup){
   if(!dateGroup) return [];
-  if(filterMode === 'all') return dateGroup.projects;
+  const base = dateGroup.projects.filter(p => !isProjectHidden(p.name));
+  if(filterMode === 'all') return base;
   if(filterMode === 'tag' && currentTagFilter){
-    return dateGroup.projects.filter(p => p.tasks.some(t => t.tag === currentTagFilter));
+    return base.filter(p => p.tasks.some(t => t.tag === currentTagFilter));
   }
   if(filterMode === 'team' && currentTeamFilter){
-    return dateGroup.projects.filter(p => {
+    return base.filter(p => {
       const o = getProjOwner(p);
       return !o || ownerBelongsToTeam(o, currentTeamFilter);
     });
   }
-  if(!currentOwner) return dateGroup.projects;
-  return dateGroup.projects.filter(p => { const o = getProjOwner(p); return !o || ownerIncludesPerson(o, currentOwner); });
+  if(!currentOwner) return base;
+  return base.filter(p => { const o = getProjOwner(p); return !o || ownerIncludesPerson(o, currentOwner); });
 }
 
 function getTaskEffectiveOwner(task){
@@ -927,6 +938,9 @@ function getKnownTeams(){
   return Array.from(teams).sort((a,b) => a.localeCompare(b, 'ko'));
 }
 
+// 일정 하나가 차지할 수 있는 최대 기간 (이보다 길면 데이터 오류로 보고 하루만 표시)
+const MAX_EVENT_SPAN_DAYS = 120;
+
 function eventOverlapsDay(task, day){
   const start = parseDateLabel(task.date);
   const isValidEndFormat = task.endDate && /\d{1,2}\s*\/\s*\d{1,2}/.test(String(task.endDate));
@@ -935,6 +949,9 @@ function eventOverlapsDay(task, day){
   const sKey = start.getFullYear()*10000 + (start.getMonth()+1)*100 + start.getDate();
   let eKey = end.getFullYear()*10000 + (end.getMonth()+1)*100 + end.getDate();
   if(eKey < sKey) eKey = sKey;
+  // 종료일이 비정상적으로 먼 경우(잘못 저장된 데이터)는 하루짜리로 취급.
+  // 달력 전체에 같은 일정이 깔리는 것을 막기 위한 안전장치 (시트는 건드리지 않음)
+  if(Math.round((end - start) / 86400000) > MAX_EVENT_SPAN_DAYS) eKey = sKey;
   return dKey >= sKey && dKey <= eKey;
 }
 
@@ -1113,6 +1130,7 @@ function renderWeekly(){
   const allEvents = [];
   data.forEach(g => {
     g.projects.forEach(p => {
+      if(isProjectHidden(p.name)) return; // 숨긴 콘서트의 일정은 주간보기에도 안 나오게
       p.tasks.forEach(t => {
         if(t.category && isTaskVisible(t)) allEvents.push({ task: t, projName: p.name });
       });
@@ -1911,7 +1929,7 @@ function openShowDateManager(initialProjName){
 
   const title = document.createElement('div');
   title.className = 'modal-title';
-  title.textContent = '공연일 기준 업무 관리';
+  title.textContent = '체크리스트 자동 입력';
   box.appendChild(title);
 
   const tabRow = document.createElement('div');
@@ -2475,10 +2493,16 @@ function openShowDateManager(initialProjName){
       const set = currentSet();
       const working = set ? set.items : [];
       const baseRank = (t) => (t.base === 'open' ? 1 : 0);
-      working.sort((a,b) => (baseRank(a) - baseRank(b)) || ((a.offset||0) - (b.offset||0)));
+      // 새로 추가한(아직 저장 안 한) 항목은 찾기 쉽게 맨 아래에 고정
+      working.sort((a,b) => {
+        if(a._new && !b._new) return 1;
+        if(b._new && !a._new) return -1;
+        return (baseRank(a) - baseRank(b)) || ((a.offset||0) - (b.offset||0));
+      });
       working.forEach((tpl, idx) => {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex; gap:8px; align-items:center; padding:6px 8px;' + (idx % 2 ? 'background:#faf9f6;' : '');
+        row.style.cssText = 'display:flex; gap:8px; align-items:center; padding:6px 8px;' +
+          (tpl._new ? 'background:#fffbe8;' : (idx % 2 ? 'background:#faf9f6;' : ''));
 
         const baseI = document.createElement('select');
         baseI.className = 'modal-input';
@@ -2505,6 +2529,7 @@ function openShowDateManager(initialProjName){
         nameI.type = 'text';
         nameI.className = 'modal-input';
         nameI.style.cssText = 'flex:1 1 auto; padding:5px 7px; font-size:12px;';
+        nameI.dataset.role = 'tplName';
         nameI.value = tpl.name || '';
         nameI.onchange = () => { tpl.name = nameI.value; };
         row.appendChild(nameI);
@@ -2579,8 +2604,11 @@ function openShowDateManager(initialProjName){
     addBtn.onclick = () => {
       const set = currentSet();
       if(!set) return;
-      set.items.push({ name:'', base:'show', offset:-7, type:'task', category:'', tag:'' });
+      set.items.push({ name:'', base:'show', offset:-7, type:'task', category:'', tag:'', _new: true });
       drawRows();
+      rowsWrap.scrollTop = rowsWrap.scrollHeight;
+      const nameInputs = rowsWrap.querySelectorAll('[data-role="tplName"]');
+      if(nameInputs.length) nameInputs[nameInputs.length - 1].focus();
     };
     const resetBtn = document.createElement('button');
     resetBtn.textContent = '기본 항목 불러오기';
@@ -2614,6 +2642,7 @@ function openShowDateManager(initialProjName){
           .sort((a,b) => ((a.base === 'open' ? 1 : 0) - (b.base === 'open' ? 1 : 0)) || (a.offset - b.offset))
       }));
       if(cleanedSets.length === 0){ alert('템플릿이 하나는 있어야 해요.'); return; }
+      workingSets.forEach(st => (st.items || []).forEach(i => { delete i._new; }));
       taskTemplates = cleanedSets;
       lastEditedSetId = setSelect.value;
       saveTaskTemplates();
@@ -3234,6 +3263,11 @@ function renderLeft(){
   addEventBtnGlobal.textContent = '+ 일정';
   addEventBtnGlobal.onclick = () => { openEventModal(dateGroup, null, null); };
   btnGroup.appendChild(addEventBtnGlobal);
+  const showDateBtn = document.createElement('button');
+  showDateBtn.textContent = '🎫 체크리스트 자동 입력';
+  showDateBtn.title = '공연일을 입력하면 해야 할 일과 기한이 자동으로 계산돼요';
+  showDateBtn.onclick = () => { openShowDateManager(''); };
+  btnGroup.appendChild(showDateBtn);
   header.appendChild(btnGroup);
   left.appendChild(header);
 
@@ -3810,7 +3844,6 @@ document.getElementById('viewFilterBtn').onclick = () => {
   openViewFilterPicker(document.getElementById('viewFilterBtn'));
 };
 document.getElementById('rolloverBtn').onclick = () => { rolloverIncompleteTasks(); };
-document.getElementById('showDateBtn').onclick = () => { openShowDateManager(''); };
 document.getElementById('todayBtn').onclick = () => { selectedDate = new Date(); ensureGroupForSelectedDate(); renderAll(); };
 
 const searchInputEl = document.getElementById('searchInput');
