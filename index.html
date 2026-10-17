@@ -180,6 +180,7 @@
     </div>
     <div style="display:flex; gap:8px; align-items:center; position:relative;">
       <button id="rolloverBtn" title="어제 미완료 할 일을 오늘로 옮기기">어제 미완료 가져오기</button>
+      <button id="showDateBtn" title="공연일을 입력하면 해야 할 일과 기한이 자동으로 계산돼요">🎫 공연일 업무</button>
       <button id="stickyNoteToggleBtn">메모</button>
       <button id="ownerBtn">내 이름 설정</button>
       <button id="manageOwnersBtn">담당자 관리</button>
@@ -250,6 +251,201 @@ const EVENT_CATEGORIES = [
 function getCategoryColor(name){
   const found = EVENT_CATEGORIES.find(c => c.name === name);
   return found ? found.color : '#999999';
+}
+
+/* ===== 공연일 기준 업무 템플릿 =====
+   설정은 Tasks 시트의 특별한 행(project = __CONFIG__)에 저장해서
+   앱스크립트를 다시 배포하지 않아도 모든 사람이 같이 쓸 수 있게 함 */
+const CONFIG_PROJECT = '__CONFIG__';
+let taskTemplates = [];
+let showDates = {};
+const configRowIds = {};
+
+// offset: 공연일 기준 일수 (-30 = 공연 30일 전, 0 = 공연 당일, +3 = 공연 3일 후)
+// type: 'task' = 할 일, 'event' = 일정
+const DEFAULT_TASK_TEMPLATES = [
+  { name: '답사 & 미팅',              offset: -60, type: 'event', category: '답사&미팅',   tag: '' },
+  { name: '좌석 도면 작업',           offset: -55, type: 'task',  category: '',             tag: '도면작업' },
+  { name: '시야제한석 확인 / 도면 확정', offset: -50, type: 'task',  category: '',             tag: '도면작업' },
+  { name: '티켓 가격 · 등급 확정',     offset: -45, type: 'task',  category: '',             tag: '' },
+  { name: '예매 오픈 공지문 작성',     offset: -40, type: 'task',  category: '',             tag: '' },
+  { name: '오픈 공지',                offset: -38, type: 'event', category: '오픈공지',     tag: '' },
+  { name: '상세 공지 업로드',          offset: -35, type: 'event', category: '상세공지',     tag: '' },
+  { name: '선예매 인증',              offset: -30, type: 'event', category: '선예매인증',   tag: '' },
+  { name: '선예매 오픈',              offset: -28, type: 'event', category: '티켓오픈',     tag: '' },
+  { name: '일반예매 오픈',            offset: -25, type: 'event', category: '티켓오픈',     tag: '' },
+  { name: '좌석 추가 오픈 검토',       offset: -20, type: 'task',  category: '',             tag: '' },
+  { name: '티켓 일괄 배송',           offset: -14, type: 'event', category: '일괄배송일',   tag: '' },
+  { name: '현장 운영 인력 확정',       offset: -10, type: 'task',  category: '',             tag: '' },
+  { name: '티켓 판매 수량 최종 확인',   offset:  -7, type: 'task',  category: '',             tag: '' },
+  { name: '현장 좌석 안내물 출력',     offset:  -5, type: 'task',  category: '',             tag: '도면작업' },
+  { name: '매표소 운영 준비',          offset:  -3, type: 'task',  category: '',             tag: '' },
+  { name: '현장 세팅 점검',           offset:  -1, type: 'task',  category: '',             tag: '' },
+  { name: '공연일',                   offset:   0, type: 'event', category: '공연일',       tag: '' },
+  { name: '정산 자료 정리',           offset:   1, type: 'task',  category: '',             tag: '' },
+  { name: '취소 · 환불 처리 마감',     offset:   5, type: 'task',  category: '',             tag: '' }
+];
+
+function extractConfigRows(flatTasks){
+  const rest = [];
+  flatTasks.forEach(t => {
+    if(t.project !== CONFIG_PROJECT){ rest.push(t); return; }
+    configRowIds[t.text] = t.id;
+    let parsed = null;
+    try { parsed = JSON.parse(t.details || 'null'); } catch(e){ parsed = null; }
+    if(t.text === 'taskTemplates' && Array.isArray(parsed)) taskTemplates = migrateTemplates(parsed);
+    if(t.text === 'showDates' && parsed && typeof parsed === 'object') showDates = parsed;
+  });
+  if(taskTemplates.length === 0){
+    taskTemplates = [{ id: newTemplateId(), name: '기본', items: DEFAULT_TASK_TEMPLATES.map(t => Object.assign({}, t)) }];
+  }
+  return rest;
+}
+
+function newTemplateId(){
+  return 'tpl' + Date.now() + Math.floor(Math.random() * 1000);
+}
+
+// 예전에는 템플릿이 하나(항목 배열)였음 → 이름 있는 템플릿 묶음으로 변환
+function migrateTemplates(parsed){
+  if(parsed.length === 0) return [];
+  if(parsed[0] && Array.isArray(parsed[0].items)){
+    return parsed.map(s => ({
+      id: s.id || newTemplateId(),
+      name: s.name || '이름 없음',
+      items: Array.isArray(s.items) ? s.items : []
+    }));
+  }
+  return [{ id: newTemplateId(), name: '기본', items: parsed }];
+}
+
+function getTemplateById(id){
+  return taskTemplates.find(s => s.id === id) || null;
+}
+
+function getTemplateItems(id){
+  const s = getTemplateById(id);
+  if(s) return s.items || [];
+  return taskTemplates.length ? (taskTemplates[0].items || []) : [];
+}
+
+const configSavePending = {};
+function saveConfigRow(key, value){
+  // 같은 설정을 연속으로 저장할 때 중복 행이 생기지 않도록 순서대로 처리
+  const prev = configSavePending[key] || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => {
+    const json = JSON.stringify(value);
+    const id = configRowIds[key];
+    if(id){ return apiUpdate({ id: id, details: json }); }
+    return apiAdd({
+      date: '', project: CONFIG_PROJECT, text: key, assignee: '', deadline: '',
+      done: false, details: json, owner: '', category: CONFIG_PROJECT,
+      endDate: '', endTime: '', allDay: false, tag: ''
+    }).then(r => { if(r && r.id) configRowIds[key] = r.id; return r; });
+  });
+  configSavePending[key] = next;
+  return next;
+}
+
+function saveTaskTemplates(){
+  setStatus('저장 중...');
+  return saveConfigRow('taskTemplates', taskTemplates).then(() => setStatus('동기화됨'));
+}
+function saveShowDates(){
+  setStatus('저장 중...');
+  return saveConfigRow('showDates', showDates).then(() => setStatus('동기화됨'));
+}
+
+function todayDate(){
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+}
+
+function offsetLabel(offset){
+  const n = Number(offset) || 0;
+  if(n === 0) return 'D-DAY';
+  return n < 0 ? ('D-' + Math.abs(n)) : ('D+' + n);
+}
+
+function dateFromOffset(showISO, offset){
+  const d = fromISODate(showISO);
+  d.setDate(d.getDate() + (Number(offset) || 0));
+  return d;
+}
+
+/* showDates 값은 예전엔 "2026-11-26" 문자열이었고,
+   지금은 { date: "2026-11-26", template: "tpl..." } 형태 — 둘 다 읽을 수 있게 함 */
+function getShowDate(projName){
+  const v = showDates[projName];
+  if(!v) return '';
+  return (typeof v === 'string') ? v : (v.date || '');
+}
+
+function getShowTemplateId(projName){
+  const v = showDates[projName];
+  if(!v || typeof v === 'string') return '';
+  return v.template || '';
+}
+
+function setShowDateEntry(projName, iso, templateId){
+  showDates[projName] = { date: iso, template: templateId || '' };
+}
+
+function getShowTemplateName(projName){
+  const s = getTemplateById(getShowTemplateId(projName));
+  return s ? s.name : '';
+}
+
+// 오늘 기준 남은 일수 (양수 = 남음, 0 = 오늘, 음수 = 지남)
+function getDdayNumber(projName){
+  const iso = getShowDate(projName);
+  if(!iso) return null;
+  return Math.round((fromISODate(iso) - todayDate()) / 86400000);
+}
+
+function ddayText(projName){
+  const n = getDdayNumber(projName);
+  if(n === null) return '';
+  if(n === 0) return 'D-DAY';
+  return n > 0 ? ('D-' + n) : ('D+' + Math.abs(n));
+}
+
+function ddayColor(projName){
+  const n = getDdayNumber(projName);
+  if(n === null) return '#999999';
+  if(n < 0) return '#9aa0a6';
+  if(n === 0) return '#c0392b';
+  if(n <= 7) return '#d9534f';
+  if(n <= 30) return '#d98a4a';
+  return '#4a7fb5';
+}
+
+function ddayBadgeHtml(projName, fontSize){
+  const txt = ddayText(projName);
+  if(!txt) return '';
+  const c = ddayColor(projName);
+  return '<span title="공연일 ' + getShowDate(projName) + '" style="font-size:' + (fontSize || 9) +
+    'px; font-weight:700; padding:1px 6px; border-radius:20px; background:' + c + '1a; border:1px solid ' + c +
+    '55; color:' + c + '; flex-shrink:0; letter-spacing:0.2px;">' + txt + '</span>';
+}
+
+// 해당 콘서트의 미완료 할 일 수 / 그중 날짜가 이미 지난(지연) 수
+function countProjectPending(projName){
+  const today = todayDate();
+  let pending = 0, overdue = 0;
+  data.forEach(g => {
+    g.projects.forEach(p => {
+      if(p.name !== projName) return;
+      p.tasks.forEach(t => {
+        if(t.category) return;
+        if(!t.text || !String(t.text).trim()) return;
+        if(t.done) return;
+        pending++;
+        if(parseDateLabel(g.date) < today) overdue++;
+      });
+    });
+  });
+  return { pending: pending, overdue: overdue };
 }
 
 function timeToMinutes(str){
@@ -333,8 +529,14 @@ async function apiSetSettings(body){
 
 function dateSortKey(str){
   const m = String(str).match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
-  if(!m) return 999999;
-  return parseInt(m[1],10) * 100 + parseInt(m[2],10);
+  if(!m) return 99999999;
+  const d = parseDateLabel(str);
+  return d.getFullYear() * 10000 + (d.getMonth()+1) * 100 + d.getDate();
+}
+
+function todaySortKey(){
+  const n = new Date();
+  return n.getFullYear() * 10000 + (n.getMonth()+1) * 100 + n.getDate();
 }
 
 function sortDataByDate(){
@@ -354,15 +556,37 @@ function normalizeTimeValue(v){
   return v;
 }
 
-function buildNested(flatTasks){
+function buildNested(rawTasks){
   const dateMap = {};
   const corrections = [];
+  const flatTasks = extractConfigRows(rawTasks);
   flatTasks.forEach(t => {
     t.deadline = normalizeTimeValue(t.deadline);
     t.endTime = normalizeTimeValue(t.endTime);
     const canon = canonicalizeDateLabel(t.date);
-    if(canon !== t.date){ corrections.push({ id: t.id, date: canon }); }
+    const fix = {};
+    if(canon !== t.date){ fix.date = canon; }
     t.date = canon;
+    // 일정의 종료일에도 같은 연도 보정을 적용
+    if(t.endDate && /\d{1,2}\s*\/\s*\d{1,2}/.test(String(t.endDate))){
+      let endCanon;
+      if(hasYearInLabel(t.endDate)){
+        endCanon = canonicalizeDateLabel(t.endDate);
+      } else {
+        // 연도 없는 종료일은 시작일 연도를 따라가되, 해를 넘기는 일정이면 +1년
+        const sd = parseDateLabel(canon);
+        const em = String(t.endDate).match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
+        let ey = sd.getFullYear();
+        const emo = parseInt(em[1],10), eda = parseInt(em[2],10);
+        if(emo * 100 + eda < (sd.getMonth()+1) * 100 + sd.getDate()) ey += 1;
+        endCanon = formatDateLabel(new Date(ey, emo-1, eda));
+      }
+      if(endCanon !== t.endDate){ fix.endDate = endCanon; }
+      t.endDate = endCanon;
+    }
+    if(fix.date !== undefined || fix.endDate !== undefined){
+      corrections.push(Object.assign({ id: t.id }, fix));
+    }
     if(!dateMap[canon]) dateMap[canon] = {};
     if(!dateMap[canon][t.project]) dateMap[canon][t.project] = [];
     dateMap[canon][t.project].push(t);
@@ -387,7 +611,7 @@ async function loadData(){
     loaded = true;
     setStatus('동기화됨');
     if(built.corrections.length > 0){
-      Promise.all(built.corrections.map(c => apiUpdate({ id: c.id, date: c.date })));
+      applyDateCorrections(built.corrections);
     }
   } catch(err){
     setStatus('연결 실패 - API_URL과 배포 권한을 확인해 주세요');
@@ -395,6 +619,24 @@ async function loadData(){
     data = [];
   }
   renderAll();
+}
+
+// 연도 없는 옛날 날짜를 연도 포함 형식으로 한 번에 바꿔 저장 (한 번만 돌면 끝)
+async function applyDateCorrections(corrections){
+  const CHUNK = 5;
+  for(let i = 0; i < corrections.length; i += CHUNK){
+    const slice = corrections.slice(i, i + CHUNK);
+    setStatus('날짜 정리 중... ' + Math.min(i + CHUNK, corrections.length) + '/' + corrections.length);
+    try {
+      await Promise.all(slice.map(c => {
+        const body = { id: c.id };
+        if(c.date !== undefined) body.date = c.date;
+        if(c.endDate !== undefined) body.endDate = c.endDate;
+        return apiUpdate(body);
+      }));
+    } catch(e){ /* 일부 실패해도 다음 로딩 때 다시 시도됨 */ }
+  }
+  setStatus('동기화됨');
 }
 
 function rolloverIncompleteTasks(){
@@ -438,8 +680,19 @@ function rolloverIncompleteTasks(){
 
 const WEEKDAY_CHARS = ['일','월','화','수','목','금','토'];
 
+/* 날짜 라벨 형식: "11/26(목) 2026"
+   연도를 뒤에 붙이는 이유 — 예전 버전이 열려 있는 브라우저도 앞의 11/26을 그대로
+   읽기 때문에 날짜가 엉키지 않고, 최악의 경우에도 연도만 떨어져 나감 */
 function formatDateLabel(date){
-  return (date.getMonth()+1) + '/' + date.getDate() + '(' + WEEKDAY_CHARS[date.getDay()] + ')';
+  return (date.getMonth()+1) + '/' + date.getDate() + '(' + WEEKDAY_CHARS[date.getDay()] + ') ' + date.getFullYear();
+}
+
+// 화면 표시용: 올해면 연도 생략, 다른 해면 '27 처럼 앞에 붙임
+function formatDateShort(labelOrDate){
+  const d = (labelOrDate instanceof Date) ? labelOrDate : parseDateLabel(labelOrDate);
+  const base = (d.getMonth()+1) + '/' + d.getDate() + '(' + WEEKDAY_CHARS[d.getDay()] + ')';
+  if(d.getFullYear() === new Date().getFullYear()) return base;
+  return "'" + String(d.getFullYear()).slice(2) + ' ' + base;
 }
 
 function isSameDay(a, b){
@@ -893,7 +1146,9 @@ function renderWeekly(){
     projCell.style.cursor = 'grab';
     projCell.draggable = true;
     projCell.innerHTML =
+      '<span style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">' +
       (owner ? '<span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + ownerColorFor(owner) + '22; border:1px solid ' + ownerColorFor(owner) + '55; color:' + ownerColorFor(owner) + ';">' + getOwnerDisplay(owner) + '</span>' : '') +
+      ddayBadgeHtml(name, 9) + '</span>' +
       '<span style="display:flex; align-items:center; gap:5px;"><span style="color:#ccc; font-size:12px; flex-shrink:0;">⠿</span><span style="width:8px;height:8px;border-radius:50%;background:' + accentColor + ';flex-shrink:0;display:inline-block;"></span><span style="word-break:break-all;">' + name + '</span></span>';
 
     projCell.addEventListener('dragstart', (e) => {
@@ -1024,11 +1279,26 @@ function renderWeekly(){
   container.appendChild(wrap);
 }
 
+// 연도가 없는 옛날 데이터에 붙여 줄 기준 연도 (이 보드를 쓰기 시작한 해)
+const LEGACY_BASE_YEAR = 2026;
+
 function parseDateLabel(label){
-  const m = String(label).match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
+  const s = String(label);
+  const m = s.match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
   if(!m) return new Date();
-  const now = new Date();
-  return new Date(now.getFullYear(), parseInt(m[1],10)-1, parseInt(m[2],10));
+  const month = parseInt(m[1],10);
+  const day = parseInt(m[2],10);
+  // "11/26(목) 2026" 처럼 뒤에 붙은 연도를 찾음
+  const y = s.slice(m.index + m[0].length).match(/(20\d{2})/);
+  const year = y ? parseInt(y[1],10) : LEGACY_BASE_YEAR;
+  return new Date(year, month-1, day);
+}
+
+function hasYearInLabel(label){
+  const s = String(label);
+  const m = s.match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
+  if(!m) return false;
+  return /(20\d{2})/.test(s.slice(m.index + m[0].length));
 }
 
 function canonicalizeDateLabel(label){
@@ -1079,7 +1349,7 @@ function renderSearchResults(query){
   results.forEach(r => {
     const item = document.createElement('div');
     item.className = 'search-item';
-    item.innerHTML = '<div class="si-date">' + r.date + '</div><div class="si-proj">[' + r.proj + ']</div><div class="si-text">' + (r.task.text || '(내용 없음)') + '</div>';
+    item.innerHTML = '<div class="si-date">' + formatDateShort(r.date) + '</div><div class="si-proj">[' + r.proj + ']</div><div class="si-text">' + (r.task.text || '(내용 없음)') + '</div>';
     item.onclick = () => {
       selectedDate = parseDateLabel(r.date);
       ensureGroupForSelectedDate();
@@ -1149,7 +1419,7 @@ function renderTabs(){
 function deleteActiveDate(){
   const d = data[activeIdx];
   if(!d){ alert('삭제할 날짜를 먼저 선택해 주세요.'); return; }
-  const ok = confirm(d.date + ' 날짜와 그 안의 모든 할 일을 삭제할까요? 되돌릴 수 없어요.');
+  const ok = confirm(formatDateShort(d.date) + ' 날짜와 그 안의 모든 할 일을 삭제할까요? 되돌릴 수 없어요.');
   if(!ok) return;
 
   const idsToDelete = [];
@@ -1607,6 +1877,699 @@ function openEventModal(dateGroup, proj, editingTask){
   titleInput.focus();
 }
 
+function openShowDateManager(initialProjName){
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const box = document.createElement('div');
+  box.className = 'modal-box';
+  box.style.width = '720px';
+
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = '공연일 기준 업무 관리';
+  box.appendChild(title);
+
+  const tabRow = document.createElement('div');
+  tabRow.style.cssText = 'display:flex; gap:6px; margin-bottom:16px;';
+  const tabGen = document.createElement('button');
+  const tabTpl = document.createElement('button');
+  tabGen.textContent = '공연일 · 업무 생성';
+  tabTpl.textContent = '업무 템플릿 편집';
+  tabRow.appendChild(tabGen);
+  tabRow.appendChild(tabTpl);
+  box.appendChild(tabRow);
+
+  const paneGen = document.createElement('div');
+  const paneTpl = document.createElement('div');
+  box.appendChild(paneGen);
+  box.appendChild(paneTpl);
+
+  let activeTab = 'gen';
+  function syncTabs(){
+    const on = 'background:#2563eb; color:#fff; border-color:#2563eb;';
+    const off = '';
+    tabGen.style.cssText = activeTab === 'gen' ? on : off;
+    tabTpl.style.cssText = activeTab === 'tpl' ? on : off;
+    paneGen.style.display = activeTab === 'gen' ? 'block' : 'none';
+    paneTpl.style.display = activeTab === 'tpl' ? 'block' : 'none';
+  }
+  tabGen.onclick = () => { activeTab = 'gen'; syncTabs(); };
+  tabTpl.onclick = () => { activeTab = 'tpl'; renderTplPane(); syncTabs(); };
+
+  /* ---------- 탭 1 : 공연일 등록 & 업무 생성 ---------- */
+  const listWrap = document.createElement('div');
+  listWrap.style.cssText = 'margin-bottom:20px;';
+  paneGen.appendChild(listWrap);
+
+  function renderShowDateList(){
+    listWrap.innerHTML = '';
+    const names = Object.keys(showDates).filter(n => showDates[n]);
+    const head = document.createElement('div');
+    head.style.cssText = 'font-size:12px; color:#666; margin-bottom:8px; font-weight:600;';
+    head.textContent = '등록된 공연일 (' + names.length + ')';
+    listWrap.appendChild(head);
+    if(names.length === 0){
+      const p = document.createElement('div');
+      p.style.cssText = 'font-size:12px; color:#999; padding:10px 0 4px;';
+      p.textContent = '아직 등록된 공연일이 없어요. 아래에서 콘서트와 공연일을 선택해 주세요.';
+      listWrap.appendChild(p);
+      return;
+    }
+    names.sort((a,b) => {
+      const na = getDdayNumber(a), nb = getDdayNumber(b);
+      const fa = na < 0 ? 1 : 0, fb = nb < 0 ? 1 : 0;
+      if(fa !== fb) return fa - fb;
+      return fa ? (nb - na) : (na - nb);
+    });
+    const table = document.createElement('div');
+    table.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden;';
+    names.forEach((n, i) => {
+      const cnt = countProjectPending(n);
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:9px 12px; font-size:12px;' +
+        (i % 2 ? 'background:#faf9f6;' : 'background:#fff;');
+      const showD = fromISODate(getShowDate(n));
+      const tplName = getShowTemplateName(n);
+      row.innerHTML =
+        '<span style="flex:1 1 auto; font-weight:600; color:' + colorFor(n) + '; word-break:break-all;">' + escapeHtml(n) + '</span>' +
+        (tplName ? '<span style="flex:0 0 auto; font-size:9px; padding:1px 6px; border-radius:20px; background:#eef2ff; border:1px solid #c9d4f5; color:#4a5fb5;">' + escapeHtml(tplName) + '</span>' : '') +
+        ddayBadgeHtml(n, 10) +
+        '<span style="flex:0 0 92px; color:#666; text-align:right;">' + formatDateShort(showD) + '</span>' +
+        '<span style="flex:0 0 112px; text-align:right; color:' + (cnt.overdue ? '#c0392b' : '#999') + ';">' +
+          '미완료 ' + cnt.pending + '건' + (cnt.overdue ? ' · 지연 ' + cnt.overdue : '') + '</span>';
+      const editBtn = document.createElement('button');
+      editBtn.textContent = '선택';
+      editBtn.style.cssText = 'font-size:11px; padding:3px 9px; height:auto;';
+      editBtn.onclick = () => { projSelect.value = n; onProjChange(); };
+      const delBtn = document.createElement('button');
+      delBtn.textContent = '삭제';
+      delBtn.style.cssText = 'font-size:11px; padding:3px 9px; height:auto; color:#c0392b;';
+      delBtn.onclick = () => {
+        if(!confirm('"' + n + '"의 공연일 등록을 지울까요?\n(이미 만들어진 할 일/일정은 그대로 남아요)')) return;
+        delete showDates[n];
+        saveShowDates();
+        renderShowDateList();
+        renderAll();
+      };
+      row.appendChild(editBtn);
+      row.appendChild(delBtn);
+      table.appendChild(row);
+    });
+    listWrap.appendChild(table);
+  }
+
+  const formWrap = document.createElement('div');
+  formWrap.style.cssText = 'border-top:1px solid #efeee9; padding-top:16px;';
+  paneGen.appendChild(formWrap);
+
+  const inputRow = document.createElement('div');
+  inputRow.style.cssText = 'display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px;';
+
+  const projField = document.createElement('div');
+  projField.style.cssText = 'flex:1 1 180px;';
+  projField.innerHTML = '<span class="modal-label">콘서트</span>';
+  const projSelect = document.createElement('select');
+  projSelect.className = 'modal-input';
+  const knownNames = getKnownProjectNames();
+  if(knownNames.length === 0){
+    const opt = document.createElement('option');
+    opt.value = ''; opt.textContent = '등록된 콘서트가 없어요';
+    projSelect.appendChild(opt);
+  } else {
+    knownNames.forEach(n => {
+      const opt = document.createElement('option');
+      opt.value = n; opt.textContent = n;
+      projSelect.appendChild(opt);
+    });
+  }
+  if(initialProjName && knownNames.includes(initialProjName)) projSelect.value = initialProjName;
+  projField.appendChild(projSelect);
+  inputRow.appendChild(projField);
+
+  const dateField = document.createElement('div');
+  dateField.style.cssText = 'flex:0 0 160px;';
+  dateField.innerHTML = '<span class="modal-label">공연일</span>';
+  const dateInput = document.createElement('input');
+  dateInput.type = 'date';
+  dateInput.className = 'modal-input';
+  dateField.appendChild(dateInput);
+  inputRow.appendChild(dateField);
+
+  const tplField = document.createElement('div');
+  tplField.style.cssText = 'flex:0 0 150px;';
+  tplField.innerHTML = '<span class="modal-label">템플릿 (예매처)</span>';
+  const tplSelect = document.createElement('select');
+  tplSelect.className = 'modal-input';
+  function fillTemplateOptions(keepValue){
+    const prev = keepValue !== undefined ? keepValue : tplSelect.value;
+    tplSelect.innerHTML = '';
+    taskTemplates.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name + ' (' + (s.items ? s.items.length : 0) + ')';
+      tplSelect.appendChild(opt);
+    });
+    if(prev && taskTemplates.some(s => s.id === prev)) tplSelect.value = prev;
+  }
+  fillTemplateOptions('');
+  tplSelect.addEventListener('change', () => {
+    Object.keys(checkState).forEach(k => delete checkState[k]);
+    renderPreview();
+  });
+  tplField.appendChild(tplSelect);
+  inputRow.appendChild(tplField);
+
+  const ownerField = document.createElement('div');
+  ownerField.style.cssText = 'flex:0 0 140px;';
+  ownerField.innerHTML = '<span class="modal-label">담당자</span>';
+  const ownerSelect = document.createElement('select');
+  ownerSelect.className = 'modal-input';
+  function fillOwners(){
+    ownerSelect.innerHTML = '';
+    const blank = document.createElement('option');
+    blank.value = ''; blank.textContent = '(지정 안 함)';
+    ownerSelect.appendChild(blank);
+    getKnownOwners().forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o; opt.textContent = getOwnerDisplay(o);
+      ownerSelect.appendChild(opt);
+    });
+  }
+  fillOwners();
+  ownerField.appendChild(ownerSelect);
+  inputRow.appendChild(ownerField);
+  formWrap.appendChild(inputRow);
+
+  const previewWrap = document.createElement('div');
+  formWrap.appendChild(previewWrap);
+
+  function onProjChange(){
+    const name = projSelect.value;
+    const existing = getShowDate(name);
+    dateInput.value = existing || '';
+    const o = getOwnerForKnownName(name) || currentOwner || '';
+    ownerSelect.value = getKnownOwners().includes(o) ? o : '';
+    // 이 콘서트에 전에 쓴 템플릿이 있으면 그대로 다시 선택
+    const prevTpl = getShowTemplateId(name);
+    fillTemplateOptions(prevTpl && getTemplateById(prevTpl) ? prevTpl : (taskTemplates[0] ? taskTemplates[0].id : ''));
+    Object.keys(checkState).forEach(k => delete checkState[k]);
+    renderPreview();
+  }
+  projSelect.addEventListener('change', onProjChange);
+  dateInput.addEventListener('change', renderPreview);
+
+  const checkState = {};
+
+  // 템플릿 편집 중인 내용 (탭을 오가도 유지되고, "전체 템플릿 저장"을 눌러야 시트에 반영)
+  let workingSets = null;
+  let lastEditedSetId = '';
+  function ensureWorkingSets(){
+    if(workingSets) return;
+    workingSets = taskTemplates.map(st => ({
+      id: st.id,
+      name: st.name,
+      items: (st.items || []).map(i => Object.assign({}, i))
+    }));
+    if(workingSets.length === 0){
+      workingSets = [{ id: newTemplateId(), name: '기본', items: DEFAULT_TASK_TEMPLATES.map(t => Object.assign({}, t)) }];
+    }
+  }
+
+  function renderPreview(){
+    previewWrap.innerHTML = '';
+    const name = projSelect.value;
+    const iso = dateInput.value;
+    if(!name){ return; }
+    if(!iso){
+      const p = document.createElement('div');
+      p.style.cssText = 'font-size:12px; color:#999; padding:6px 0;';
+      p.textContent = '공연일을 선택하면 해야 할 일과 기한이 자동으로 계산돼요.';
+      previewWrap.appendChild(p);
+      return;
+    }
+    const tplSet = getTemplateById(tplSelect.value);
+    const sorted = (tplSet ? (tplSet.items || []) : []).slice().sort((a,b) => (a.offset||0) - (b.offset||0));
+    if(sorted.length === 0){
+      const p = document.createElement('div');
+      p.style.cssText = 'font-size:12px; color:#999; padding:6px 0;';
+      p.textContent = (tplSet ? '"' + tplSet.name + '" 템플릿이 비어 있어요.' : '템플릿이 없어요.') + ' "업무 템플릿 편집" 탭에서 항목을 추가해 주세요.';
+      previewWrap.appendChild(p);
+      return;
+    }
+
+    const bar = document.createElement('div');
+    bar.style.cssText = 'display:flex; align-items:center; justify-content:space-between; margin:4px 0 8px;';
+    const label = document.createElement('div');
+    label.style.cssText = 'font-size:12px; color:#666; font-weight:600;';
+    label.textContent = (tplSet ? tplSet.name + ' · ' : '') + '만들 항목 (' + sorted.length + ')';
+    bar.appendChild(label);
+    const toggleAll = document.createElement('button');
+    toggleAll.textContent = '전체 선택 / 해제';
+    toggleAll.style.cssText = 'font-size:11px; padding:3px 9px; height:auto;';
+    bar.appendChild(toggleAll);
+    previewWrap.appendChild(bar);
+
+    const table = document.createElement('div');
+    table.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden; max-height:280px; overflow-y:auto;';
+    const today = todayDate();
+    const boxes = [];
+
+    sorted.forEach((tpl, i) => {
+      const d = dateFromOffset(iso, tpl.offset);
+      const dateLabel = formatDateLabel(d);
+      const dup = findExistingGenerated(name, tpl.name);
+      const key = tpl.name + '@' + tpl.offset;
+      // 이미 만들어 둔 항목, 또는 날짜가 이미 지나버린 항목은 기본으로 체크 해제
+      if(checkState[key] === undefined) checkState[key] = !dup && !(d < today);
+
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex; align-items:center; gap:9px; padding:8px 12px; font-size:12px; cursor:pointer;' +
+        (i % 2 ? 'background:#faf9f6;' : 'background:#fff;');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = checkState[key];
+      cb.onchange = () => { checkState[key] = cb.checked; };
+      cb.style.flexShrink = '0';
+      boxes.push(cb);
+      row.appendChild(cb);
+
+      const offBadge = document.createElement('span');
+      const oc = (tpl.offset||0) === 0 ? '#c0392b' : ((tpl.offset||0) < 0 ? '#4a7fb5' : '#8a8a8a');
+      offBadge.style.cssText = 'flex:0 0 58px; font-size:10px; font-weight:700; color:' + oc + ';';
+      offBadge.textContent = offsetLabel(tpl.offset);
+      row.appendChild(offBadge);
+
+      const dateCell = document.createElement('span');
+      const isPast = d < today;
+      dateCell.style.cssText = 'flex:0 0 96px; color:' + (isPast ? '#bbb' : '#444') + ';';
+      dateCell.textContent = formatDateShort(d);
+      row.appendChild(dateCell);
+
+      const typeCell = document.createElement('span');
+      typeCell.style.cssText = 'flex:0 0 72px;';
+      if(tpl.type === 'event'){
+        const c = getCategoryColor(tpl.category);
+        typeCell.innerHTML = '<span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + c + '22; border:1px solid ' + c + '55; color:' + c + ';">' + escapeHtml(tpl.category || '일정') + '</span>';
+      } else {
+        typeCell.innerHTML = '<span style="font-size:9px; color:#999;">할 일</span>';
+      }
+      row.appendChild(typeCell);
+
+      const nameCell = document.createElement('span');
+      nameCell.style.cssText = 'flex:1 1 auto; word-break:break-all;';
+      nameCell.innerHTML = escapeHtml(tpl.name) +
+        (tpl.tag ? ' <span style="font-size:9px; padding:1px 5px; border-radius:4px; background:#eef2ff; color:#4a5fb5;">#' + escapeHtml(tpl.tag) + '</span>' : '') +
+        (dup ? ' <span style="font-size:9px; color:#c08a2a;">이미 있음 (' + escapeHtml(formatDateShort(dup)) + ')</span>' : '');
+      row.appendChild(nameCell);
+
+      table.appendChild(row);
+    });
+    previewWrap.appendChild(table);
+
+    toggleAll.onclick = (e) => {
+      e.preventDefault();
+      const anyOff = boxes.some(b => !b.checked);
+      boxes.forEach(b => { b.checked = anyOff; b.onchange(); });
+    };
+
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:11px; color:#999; margin-top:8px; line-height:1.6;';
+    note.textContent = '이미 같은 이름으로 만들어 둔 항목은 자동으로 체크가 풀려 있어요. 공연일만 등록하고 업무는 나중에 만들어도 돼요.';
+    previewWrap.appendChild(note);
+
+    const act = document.createElement('div');
+    act.style.cssText = 'display:flex; gap:8px; justify-content:flex-end; margin-top:14px;';
+    const saveOnlyBtn = document.createElement('button');
+    saveOnlyBtn.textContent = '공연일만 저장';
+    saveOnlyBtn.onclick = () => {
+      setShowDateEntry(name, iso, tplSelect.value);
+      saveShowDates();
+      renderShowDateList();
+      renderAll();
+      setStatus('공연일 저장됨');
+    };
+    const genBtn = document.createElement('button');
+    genBtn.className = 'primary';
+    genBtn.textContent = '공연일 저장 + 선택 항목 만들기';
+    genBtn.onclick = () => runGenerate(name, iso, sorted, genBtn);
+    act.appendChild(saveOnlyBtn);
+    act.appendChild(genBtn);
+    previewWrap.appendChild(act);
+  }
+
+  // 같은 콘서트에 같은 제목으로 이미 만들어진 항목이 있으면 그 날짜를 돌려줌
+  function findExistingGenerated(projName, text){
+    const target = String(text).trim();
+    for(const g of data){
+      for(const p of g.projects){
+        if(p.name !== projName) continue;
+        for(const t of p.tasks){
+          if(String(t.text || '').trim() === target) return g.date;
+        }
+      }
+    }
+    return '';
+  }
+
+  async function runGenerate(name, iso, sorted, btn){
+    const picked = sorted.filter(tpl => checkState[tpl.name + '@' + tpl.offset]);
+    if(picked.length === 0){
+      if(!confirm('선택한 항목이 없어요. 공연일만 저장할까요?')) return;
+      setShowDateEntry(name, iso, tplSelect.value);
+      await saveShowDates();
+      renderShowDateList();
+      renderAll();
+      return;
+    }
+    if(!confirm('"' + name + '" 공연일을 ' + formatDateShort(fromISODate(iso)) + '로 저장하고\n' + picked.length + '개 항목을 만들까요?')) return;
+
+    btn.disabled = true;
+    const ownerVal = ownerSelect.value || '';
+    setShowDateEntry(name, iso, tplSelect.value);
+    await saveShowDates();
+
+    for(let i = 0; i < picked.length; i++){
+      const tpl = picked[i];
+      btn.textContent = '만드는 중... (' + (i+1) + '/' + picked.length + ')';
+      setStatus('만드는 중 ' + (i+1) + '/' + picked.length);
+      const d = dateFromOffset(iso, tpl.offset);
+      const dateLabel = formatDateLabel(d);
+      const isEvent = tpl.type === 'event';
+      const body = {
+        date: dateLabel,
+        project: name,
+        text: tpl.name,
+        assignee: '',
+        deadline: '',
+        done: false,
+        details: '',
+        owner: ownerVal,
+        category: isEvent ? (tpl.category || '기타') : '',
+        endDate: isEvent ? dateLabel : '',
+        endTime: '',
+        allDay: isEvent ? true : false,
+        tag: tpl.tag || ''
+      };
+      let targetGroup = data.find(g => g.date === dateLabel);
+      if(!targetGroup){
+        targetGroup = { date: dateLabel, projects: [] };
+        data.push(targetGroup);
+        sortDataByDate();
+      }
+      let targetProj = targetGroup.projects.find(p => p.name === name);
+      if(!targetProj){
+        targetProj = { name: name, tasks: [] };
+        targetGroup.projects.push(targetProj);
+      }
+      const newTask = Object.assign({ id: 'temp_' + Date.now() + '_' + i }, body);
+      targetProj.tasks.push(newTask);
+      try {
+        const r = await apiAdd(body);
+        if(r && r.id) newTask.id = r.id;
+      } catch(e){ /* 네트워크 오류는 건너뜀 */ }
+    }
+    setStatus('동기화됨');
+    btn.disabled = false;
+    btn.textContent = '공연일 저장 + 선택 항목 만들기';
+    Object.keys(checkState).forEach(k => delete checkState[k]);
+    renderShowDateList();
+    renderPreview();
+    renderAll();
+    alert(picked.length + '개 항목을 만들었어요.');
+  }
+
+  /* ---------- 탭 2 : 템플릿 편집 ---------- */
+  function renderTplPane(){
+    ensureWorkingSets();
+    paneTpl.innerHTML = '';
+    const desc = document.createElement('div');
+    desc.style.cssText = 'font-size:12px; color:#666; line-height:1.7; margin-bottom:12px;';
+    desc.innerHTML = '공연일을 기준으로 며칠 전/후에 해야 하는 일을 적어 두면, 공연일만 입력해도 날짜가 자동으로 계산돼요.<br>' +
+      '<span style="color:#999;">기한 숫자: -30 = 공연 30일 전, 0 = 공연 당일, 3 = 공연 3일 후. 예매처별로 템플릿을 따로 만들어 쓸 수 있고, 회사 전체가 같이 씁니다.</span>';
+    paneTpl.appendChild(desc);
+
+    // --- 템플릿(예매처) 선택 줄 ---
+    const setBar = document.createElement('div');
+    setBar.style.cssText = 'display:flex; gap:6px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px; padding-bottom:14px; border-bottom:1px solid #efeee9;';
+    const setField = document.createElement('div');
+    setField.style.cssText = 'flex:1 1 200px;';
+    setField.innerHTML = '<span class="modal-label">예매처 템플릿</span>';
+    const setSelect = document.createElement('select');
+    setSelect.className = 'modal-input';
+    setField.appendChild(setSelect);
+    setBar.appendChild(setField);
+
+    const mkBtn = (txt, title, fn, color) => {
+      const b = document.createElement('button');
+      b.textContent = txt;
+      if(title) b.title = title;
+      b.style.cssText = 'font-size:12px; padding:8px 11px; height:auto;' + (color ? ' color:' + color + ';' : '');
+      b.onclick = fn;
+      return b;
+    };
+
+    function fillSetSelect(selectId){
+      setSelect.innerHTML = '';
+      workingSets.forEach(st => {
+        const o = document.createElement('option');
+        o.value = st.id;
+        o.textContent = st.name + ' (' + (st.items ? st.items.length : 0) + ')';
+        setSelect.appendChild(o);
+      });
+      if(selectId && workingSets.some(st => st.id === selectId)) setSelect.value = selectId;
+      else if(workingSets.length) setSelect.value = workingSets[0].id;
+    }
+
+    function currentSet(){
+      return workingSets.find(st => st.id === setSelect.value) || null;
+    }
+
+    setBar.appendChild(mkBtn('+ 새 템플릿', '빈 템플릿을 새로 만들어요', (e) => {
+      openInlineTextInput(e.target.getBoundingClientRect(), '예매처 이름 (예: 인터파크)', (val) => {
+        const nm = (val || '').trim();
+        if(!nm) return;
+        const st = { id: newTemplateId(), name: nm, items: [] };
+        workingSets.push(st);
+        fillSetSelect(st.id);
+        drawRows();
+      });
+    }));
+    setBar.appendChild(mkBtn('복제', '지금 템플릿을 그대로 복사해서 새 예매처용으로 만들어요', (e) => {
+      const cur = currentSet();
+      if(!cur) return;
+      openInlineTextInput(e.target.getBoundingClientRect(), '새 이름 (예: 예스24)', (val) => {
+        const nm = (val || '').trim();
+        if(!nm) return;
+        const st = { id: newTemplateId(), name: nm, items: (cur.items || []).map(i => Object.assign({}, i)) };
+        workingSets.push(st);
+        fillSetSelect(st.id);
+        drawRows();
+      });
+    }));
+    setBar.appendChild(mkBtn('이름 변경', '', (e) => {
+      const cur = currentSet();
+      if(!cur) return;
+      openInlineTextInput(e.target.getBoundingClientRect(), '예매처 이름', (val) => {
+        const nm = (val || '').trim();
+        if(!nm) return;
+        cur.name = nm;
+        fillSetSelect(cur.id);
+      }, cur.name);
+    }));
+    setBar.appendChild(mkBtn('삭제', '', () => {
+      const cur = currentSet();
+      if(!cur) return;
+      if(workingSets.length <= 1){ alert('템플릿이 하나뿐이라 지울 수 없어요.'); return; }
+      if(!confirm('"' + cur.name + '" 템플릿을 지울까요?\n(이미 만들어진 할 일은 그대로 남아요)')) return;
+      workingSets = workingSets.filter(st => st.id !== cur.id);
+      fillSetSelect('');
+      drawRows();
+    }, '#c0392b'));
+    paneTpl.appendChild(setBar);
+
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex; gap:8px; font-size:10px; color:#999; padding:0 4px 6px; font-weight:600;';
+    head.innerHTML = '<span style="flex:0 0 66px;">기한</span>' +
+      '<span style="flex:1 1 auto;">업무명</span>' +
+      '<span style="flex:0 0 78px;">구분</span>' +
+      '<span style="flex:0 0 100px;">카테고리</span>' +
+      '<span style="flex:0 0 92px;">태그</span>' +
+      '<span style="flex:0 0 34px;"></span>';
+    paneTpl.appendChild(head);
+
+    const rowsWrap = document.createElement('div');
+    rowsWrap.style.cssText = 'max-height:340px; overflow-y:auto; border:1px solid #e8e6e0; border-radius:10px;';
+    paneTpl.appendChild(rowsWrap);
+
+    function drawRows(){
+      rowsWrap.innerHTML = '';
+      const set = currentSet();
+      const working = set ? set.items : [];
+      working.sort((a,b) => (a.offset||0) - (b.offset||0));
+      working.forEach((tpl, idx) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; gap:8px; align-items:center; padding:6px 8px;' + (idx % 2 ? 'background:#faf9f6;' : '');
+
+        const off = document.createElement('input');
+        off.type = 'number';
+        off.className = 'modal-input';
+        off.style.cssText = 'flex:0 0 66px; padding:5px 7px; font-size:12px;';
+        off.value = tpl.offset || 0;
+        off.onchange = () => { tpl.offset = parseInt(off.value, 10) || 0; };
+        row.appendChild(off);
+
+        const nameI = document.createElement('input');
+        nameI.type = 'text';
+        nameI.className = 'modal-input';
+        nameI.style.cssText = 'flex:1 1 auto; padding:5px 7px; font-size:12px;';
+        nameI.value = tpl.name || '';
+        nameI.onchange = () => { tpl.name = nameI.value; };
+        row.appendChild(nameI);
+
+        const typeI = document.createElement('select');
+        typeI.className = 'modal-input';
+        typeI.style.cssText = 'flex:0 0 78px; padding:5px 7px; font-size:12px;';
+        [['task','할 일'],['event','일정']].forEach(([v,l]) => {
+          const o = document.createElement('option');
+          o.value = v; o.textContent = l;
+          if((tpl.type||'task') === v) o.selected = true;
+          typeI.appendChild(o);
+        });
+        row.appendChild(typeI);
+
+        const catI = document.createElement('select');
+        catI.className = 'modal-input';
+        catI.style.cssText = 'flex:0 0 100px; padding:5px 7px; font-size:12px;';
+        EVENT_CATEGORIES.forEach(c => {
+          const o = document.createElement('option');
+          o.value = c.name; o.textContent = c.name;
+          if(tpl.category === c.name) o.selected = true;
+          catI.appendChild(o);
+        });
+        catI.onchange = () => { tpl.category = catI.value; };
+        row.appendChild(catI);
+
+        function syncType(){
+          tpl.type = typeI.value;
+          const isEv = typeI.value === 'event';
+          catI.disabled = !isEv;
+          catI.style.opacity = isEv ? '1' : '0.35';
+          if(isEv && !tpl.category){ tpl.category = catI.value; }
+          if(!isEv){ tpl.category = ''; }
+        }
+        typeI.onchange = syncType;
+        syncType();
+
+        const tagI = document.createElement('input');
+        tagI.type = 'text';
+        tagI.className = 'modal-input';
+        tagI.style.cssText = 'flex:0 0 92px; padding:5px 7px; font-size:12px;';
+        tagI.placeholder = '예: 도면작업';
+        tagI.value = tpl.tag || '';
+        tagI.onchange = () => { tpl.tag = tagI.value.trim(); };
+        row.appendChild(tagI);
+
+        const del = document.createElement('button');
+        del.textContent = '✕';
+        del.title = '이 항목 삭제';
+        del.style.cssText = 'flex:0 0 34px; font-size:12px; padding:4px 0; height:auto; color:#c0392b;';
+        del.onclick = () => { working.splice(idx, 1); drawRows(); };
+        row.appendChild(del);
+
+        rowsWrap.appendChild(row);
+      });
+      if(working.length === 0){
+        const p = document.createElement('div');
+        p.style.cssText = 'font-size:12px; color:#999; padding:14px;';
+        p.textContent = '항목이 없어요. 아래 "+ 항목 추가"를 눌러 주세요.';
+        rowsWrap.appendChild(p);
+      }
+    }
+    setSelect.addEventListener('change', drawRows);
+    fillSetSelect(lastEditedSetId);
+    drawRows();
+
+    const act = document.createElement('div');
+    act.style.cssText = 'display:flex; gap:8px; margin-top:14px; flex-wrap:wrap;';
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '+ 항목 추가';
+    addBtn.onclick = () => {
+      const set = currentSet();
+      if(!set) return;
+      set.items.push({ name:'', offset:-7, type:'task', category:'', tag:'' });
+      drawRows();
+    };
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = '기본 항목 불러오기';
+    resetBtn.title = '지금 선택한 템플릿을 기본 업무 목록으로 채워요';
+    resetBtn.onclick = () => {
+      const set = currentSet();
+      if(!set) return;
+      if(!confirm('"' + set.name + '" 템플릿의 지금 목록을 지우고 기본 업무 목록을 불러올까요?')) return;
+      set.items = DEFAULT_TASK_TEMPLATES.map(t => Object.assign({}, t));
+      fillSetSelect(set.id);
+      drawRows();
+    };
+    const spacer = document.createElement('div');
+    spacer.style.flex = '1 1 auto';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'primary';
+    saveBtn.textContent = '전체 템플릿 저장';
+    saveBtn.onclick = () => {
+      const cleanedSets = workingSets.map(st => ({
+        id: st.id,
+        name: (st.name || '이름 없음').trim(),
+        items: (st.items || []).filter(t => t.name && t.name.trim())
+          .map(t => ({
+            name: t.name.trim(),
+            offset: parseInt(t.offset, 10) || 0,
+            type: t.type === 'event' ? 'event' : 'task',
+            category: t.type === 'event' ? (t.category || '기타') : '',
+            tag: (t.tag || '').trim()
+          }))
+          .sort((a,b) => a.offset - b.offset)
+      }));
+      if(cleanedSets.length === 0){ alert('템플릿이 하나는 있어야 해요.'); return; }
+      taskTemplates = cleanedSets;
+      lastEditedSetId = setSelect.value;
+      saveTaskTemplates();
+      Object.keys(checkState).forEach(k => delete checkState[k]);
+      fillTemplateOptions(lastEditedSetId);
+      renderPreview();
+      activeTab = 'gen';
+      syncTabs();
+      const total = cleanedSets.reduce((n, st) => n + st.items.length, 0);
+      alert('템플릿 ' + cleanedSets.length + '개 (총 ' + total + '개 항목)를 저장했어요.');
+    };
+    act.appendChild(addBtn);
+    act.appendChild(resetBtn);
+    act.appendChild(spacer);
+    act.appendChild(saveBtn);
+    paneTpl.appendChild(act);
+
+    const warn = document.createElement('div');
+    warn.style.cssText = 'font-size:11px; color:#c08a2a; margin-top:10px;';
+    warn.textContent = '새 템플릿 / 복제 / 이름 변경 / 삭제도 "전체 템플릿 저장"을 눌러야 반영돼요.';
+    paneTpl.appendChild(warn);
+  }
+
+  const closeRow = document.createElement('div');
+  closeRow.className = 'modal-actions';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '닫기';
+  closeBtn.onclick = () => { if(backdrop.parentNode) document.body.removeChild(backdrop); };
+  closeRow.appendChild(closeBtn);
+  box.appendChild(closeRow);
+
+  renderShowDateList();
+  onProjChange();
+  syncTabs();
+
+  backdrop.appendChild(box);
+  backdrop.addEventListener('mousedown', (e) => { if(e.target === backdrop) document.body.removeChild(backdrop); });
+  document.body.appendChild(backdrop);
+}
+
 function openOwnerManager(anchorEl){
   const rect = anchorEl.getBoundingClientRect();
   const panel = document.createElement('div');
@@ -2012,11 +2975,13 @@ function openOwnerPicker(anchorEl, currentValue, onSelect){
   });
 }
 
-function openInlineTextInput(rect, placeholder, onConfirm){
+function openInlineTextInput(rect, placeholder, onConfirm, initialValue){
   const input = document.createElement('input');
   input.type = 'text';
   input.placeholder = placeholder;
-  input.style.cssText = 'position:fixed; top:' + (rect.bottom + 4) + 'px; left:' + rect.left + 'px; z-index:999; font-size:14px; padding:6px 8px; border:1px solid #2563eb; border-radius:6px; width:180px;';
+  if(initialValue) input.value = initialValue;
+  // 모달(z-index 2000) 위에 떠야 하므로 더 높게
+  input.style.cssText = 'position:fixed; top:' + (rect.bottom + 4) + 'px; left:' + rect.left + 'px; z-index:3000; font-size:14px; padding:6px 8px; border:1px solid #2563eb; border-radius:6px; width:180px;';
   document.body.appendChild(input);
 
   let handled = false;
@@ -2042,7 +3007,7 @@ function openInlineTextInput(rect, placeholder, onConfirm){
   };
   setTimeout(() => { document.addEventListener('mousedown', outsideClickHandler, true); }, 0);
 
-  requestAnimationFrame(() => { input.focus(); });
+  requestAnimationFrame(() => { input.focus(); input.select(); });
 }
 
 function openDateJumpPicker(anchorEl){
@@ -2224,6 +3189,15 @@ function renderLeft(){
       openOwnerPicker(ownerTag, projOwner, (name) => { reassignProjectOwnerGlobally(proj.name, name); });
     };
     nameWrap.appendChild(ownerTag);
+    const ddayTag = document.createElement('button');
+    const ddayTxt = ddayText(proj.name);
+    const ddayC = ddayColor(proj.name);
+    ddayTag.textContent = ddayTxt || '공연일 등록';
+    ddayTag.title = ddayTxt ? ('공연일 ' + getShowDate(proj.name) + ' · 눌러서 업무 생성/수정') : '공연일을 등록하면 업무 기한이 자동 계산돼요';
+    ddayTag.style.cssText = 'font-size:10px; font-weight:' + (ddayTxt ? '700' : '400') + '; padding:2px 8px; height:auto; border-radius:20px; background:' +
+      (ddayTxt ? ddayC + '1a' : '#f5f4f0') + '; border:1px solid ' + (ddayTxt ? ddayC + '55' : '#e0ded7') + '; color:' + (ddayTxt ? ddayC : '#aaa') + ';';
+    ddayTag.onclick = () => { openShowDateManager(proj.name); };
+    nameWrap.appendChild(ddayTag);
     const btns = document.createElement('div');
     btns.className = 'proj-btns';
     const addTaskBtn = document.createElement('button');
@@ -2472,7 +3446,7 @@ function renderRight(){
 
   const titleRow = document.createElement('div');
   titleRow.className = 'right-title';
-  titleRow.innerHTML = '<span>' + (dateGroup ? dateGroup.date + ' 타임박스' : '타임박스') + '</span><span style="color:#aaa;">블록을 드래그해서 옮기세요</span>';
+  titleRow.innerHTML = '<span>' + (dateGroup ? formatDateShort(dateGroup.date) + ' 타임박스' : '타임박스') + '</span><span style="color:#aaa;">블록을 드래그해서 옮기세요</span>';
   right.appendChild(titleRow);
 
   if(!dateGroup) return;
@@ -2522,7 +3496,7 @@ function renderRight(){
   }
 
   const now = new Date();
-  const todayKey = (now.getMonth()+1) * 100 + now.getDate();
+  const todayKey = todaySortKey();
   if(dateSortKey(dateGroup.date) === todayKey){
     const nowMin = now.getHours() * 60 + now.getMinutes();
     if(nowMin >= HOUR_START * 60 && nowMin <= HOUR_END * 60 + 60){
@@ -2677,7 +3651,7 @@ function renderProgress(){
   const pct = Math.round((done / total) * 100);
   wrap.innerHTML =
     '<div class="progress-wrap">' +
-      '<span class="progress-text">' + dateGroup.date + ' 완료 ' + done + ' / ' + total + '</span>' +
+      '<span class="progress-text">' + formatDateShort(dateGroup.date) + ' 완료 ' + done + ' / ' + total + '</span>' +
       '<div class="progress-track"><div class="progress-fill" style="width:' + pct + '%;"></div></div>' +
       '<span class="progress-pct">' + pct + '%</span>' +
     '</div>';
@@ -2750,6 +3724,7 @@ document.getElementById('viewFilterBtn').onclick = () => {
   openViewFilterPicker(document.getElementById('viewFilterBtn'));
 };
 document.getElementById('rolloverBtn').onclick = () => { rolloverIncompleteTasks(); };
+document.getElementById('showDateBtn').onclick = () => { openShowDateManager(''); };
 document.getElementById('todayBtn').onclick = () => { selectedDate = new Date(); ensureGroupForSelectedDate(); renderAll(); };
 
 const searchInputEl = document.getElementById('searchInput');
