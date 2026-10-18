@@ -2082,12 +2082,15 @@ function openProjectHistory(projName){
   box.className = 'modal-box';
   box.style.width = '720px';
 
-  let mode = 'open'; // open = 미완료만, done = 완료만, all = 전체
+  let mode = 'open';     // open=미완료만, done=완료만, all=전체
+  let projFilter = '';   // 콘서트 목록을 좁히는 검색어
+  let taskQuery = '';    // 선택한 콘서트 안에서 업무 검색
+  let searchAll = false; // 못 찾았을 때 모든 콘서트로 범위 넓히기
 
   // 고를 수 있는 콘서트 목록 (지금 보기 필터 기준)
   const pickNames = getOrderedVisibleProjectNames();
-  const allNames = getKnownProjectNames();
-  allNames.forEach(n => { if(pickNames.indexOf(n) === -1) pickNames.push(n); });
+  getKnownProjectNames().forEach(n => { if(pickNames.indexOf(n) === -1) pickNames.push(n); });
+
   // 버튼으로 열었을 때는 지금 보고 있는 날짜의 첫 콘서트를 기본으로
   let current = '';
   if(projName && pickNames.indexOf(projName) !== -1){
@@ -2100,61 +2103,161 @@ function openProjectHistory(projName){
 
   function close(){ if(backdrop.parentNode) document.body.removeChild(backdrop); }
 
-  function render(){
-    box.innerHTML = '';
-    if(!current){
-      const t = document.createElement('div');
-      t.className = 'modal-title';
-      t.textContent = '콘서트별 업무 현황';
-      box.appendChild(t);
-      const e = document.createElement('div');
-      e.style.cssText = 'font-size:12px; color:#999; padding:16px 2px;';
-      e.textContent = '볼 수 있는 콘서트가 없어요.';
-      box.appendChild(e);
-      const ac = document.createElement('div');
-      ac.className = 'modal-actions';
-      const cb2 = document.createElement('button');
-      cb2.textContent = '닫기'; cb2.onclick = close;
-      ac.appendChild(cb2); box.appendChild(ac);
-      return;
-    }
-    const projName = current;
-    const accent = colorFor(projName);
-    const entries = collectProjectTasks(projName);
-    const tasks = entries.filter(e => !e.task.category);
-    const doneCnt = tasks.filter(e => e.task.done).length;
-    const total = tasks.length;
-    const pct = total ? Math.round(doneCnt / total * 100) : 0;
-    const today = todayDate();
-    const overdue = tasks.filter(e => !e.task.done && parseDateLabel(e.date) < today).length;
+  function taskMatchesQuery(t, q){
+    return [t.text, t.details, t.tag, t.category].some(v => String(v || '').toLowerCase().indexOf(q) !== -1);
+  }
 
-    // ---- 제목 + 콘서트 선택 ----
+  function passesMode(t){
+    if(t.category) return mode === 'all';
+    if(mode === 'open') return !t.done;
+    if(mode === 'done') return !!t.done;
+    return true;
+  }
+
+  // 할 일 한 줄 만들기 (showDate=true면 날짜를 줄 안에 같이 표시)
+  function makeRow(e, showDate, indent){
+    const t = e.task;
+    const today = todayDate();
+    const past = parseDateLabel(e.date) < today;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:flex-start; gap:9px; padding:9px 12px 9px ' +
+      (indent ? '24px' : '12px') + '; font-size:13px; background:#fff; border-top:1px solid #f3f1ec;';
+
+    if(t.category){
+      const c = getCategoryColor(t.category);
+      row.innerHTML =
+        '<span style="width:9px;height:9px;border-radius:2px;background:' + c + ';flex-shrink:0;margin-top:4px;"></span>' +
+        (showDate ? '<span style="flex:0 0 86px; font-size:11px; color:' + (past ? '#ccc' : '#999') + ';">' + escapeHtml(formatDateShort(e.date)) + '</span>' : '') +
+        '<span style="flex:1; color:#777;">' + escapeHtml(t.text || '(제목 없음)') +
+        ' <span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + c + '22; border:1px solid ' + c + '55; color:' + c + ';">' + escapeHtml(t.category) + '</span></span>';
+      return row;
+    }
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!t.done;
+    cb.style.cssText = 'width:16px; height:16px; flex-shrink:0; margin-top:2px;';
+    cb.onchange = () => {
+      t.done = cb.checked;
+      setStatus('저장 중...');
+      apiUpdate({ id: t.id, done: t.done }).then(() => setStatus('동기화됨'));
+      renderAll();
+      render();
+    };
+    row.appendChild(cb);
+
+    if(showDate){
+      const dateCell = document.createElement('span');
+      dateCell.textContent = formatDateShort(e.date);
+      dateCell.style.cssText = 'flex:0 0 86px; font-size:11px; margin-top:2px; color:' +
+        (!t.done && past ? '#c0392b' : (past ? '#ccc' : '#888')) + ';';
+      row.appendChild(dateCell);
+    }
+
+    const textWrap = document.createElement('span');
+    textWrap.style.cssText = 'flex:1; min-width:0;';
+    const line = document.createElement('div');
+    line.textContent = t.text || '(내용 없음)';
+    // 완료한 일도 잘 읽히도록 취소선 없이 글자 굵기/색만 다르게
+    line.style.cssText = 'word-break:break-all; font-weight:600;' +
+      (t.done ? ' color:#6b7280; font-weight:500;' : '');
+    textWrap.appendChild(line);
+    if(t.tag){
+      const tag = document.createElement('span');
+      tag.textContent = '#' + t.tag;
+      tag.style.cssText = 'display:inline-block; margin-top:3px; font-size:9px; padding:1px 5px; border-radius:4px; background:#eef2ff; color:#4a5fb5;';
+      textWrap.appendChild(tag);
+    }
+    if(t.details && String(t.details).trim()){
+      const det = document.createElement('div');
+      det.textContent = String(t.details).replace(/\s+/g, ' ').trim();
+      det.style.cssText = 'margin-top:3px; font-size:11.5px; color:#8a8578; word-break:break-all;';
+      textWrap.appendChild(det);
+    }
+    row.appendChild(textWrap);
+
+    const goBtn = document.createElement('button');
+    goBtn.textContent = '이동';
+    goBtn.title = '이 날짜로 가기';
+    goBtn.style.cssText = 'font-size:11px; padding:3px 9px; height:auto; flex-shrink:0;';
+    goBtn.onclick = () => {
+      selectedDate = parseDateLabel(e.date);
+      ensureGroupForSelectedDate();
+      close();
+      renderAll();
+    };
+    row.appendChild(goBtn);
+    return row;
+  }
+
+  function render(){
+    // 검색창에 입력 중이던 위치를 기억했다가 다시 살려 줌
+    const act = document.activeElement;
+    const focusId = (act && (act.id === 'projHistSearch' || act.id === 'projHistFind')) ? act.id : '';
+    const caret = focusId ? act.selectionStart : 0;
+
+    box.innerHTML = '';
+    const today = todayDate();
+
+    // ---- 제목 ----
+    const accent = current ? colorFor(current) : '#999';
     const title = document.createElement('div');
     title.className = 'modal-title';
     title.style.cssText += 'display:flex; align-items:center; gap:8px; flex-wrap:wrap;';
     title.innerHTML =
       '<span style="width:10px;height:10px;border-radius:50%;background:' + accent + ';flex-shrink:0;"></span>' +
       '<span style="font-size:15px;">콘서트별 업무 현황</span>' +
-      ddayBadgeHtml(projName, 10);
+      ddayBadgeHtml(current, 10);
     box.appendChild(title);
 
+    // ---- 콘서트 고르기 (이름으로 좁혀서 빠르게 찾기) ----
+    const filtered = projFilter.trim()
+      ? pickNames.filter(n => n.toLowerCase().indexOf(projFilter.trim().toLowerCase()) !== -1)
+      : pickNames.slice();
+    // 좁힌 목록에 지금 콘서트가 없으면 첫 번째로 자동 이동
+    if(filtered.length > 0 && filtered.indexOf(current) === -1){ current = filtered[0]; }
+    const accent2 = current ? colorFor(current) : '#999';
+
     const pickRow = document.createElement('div');
-    pickRow.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px;';
+    pickRow.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px;';
+
+    const projFind = document.createElement('input');
+    projFind.type = 'text';
+    projFind.id = 'projHistFind';
+    projFind.className = 'modal-input';
+    projFind.placeholder = '콘서트 찾기';
+    projFind.value = projFilter;
+    projFind.style.cssText = 'flex:0 0 150px; min-width:120px;';
+    projFind.oninput = () => { projFilter = projFind.value; searchAll = false; render(); };
+    pickRow.appendChild(projFind);
+
     const pickSel = document.createElement('select');
     pickSel.className = 'modal-input';
-    pickSel.style.cssText = 'flex:1 1 220px; min-width:180px; font-weight:600; color:' + accent + ';';
-    pickNames.forEach(n => {
+    pickSel.style.cssText = 'flex:1 1 200px; min-width:160px; font-weight:600; color:' + accent2 + ';';
+    if(filtered.length === 0){
       const o = document.createElement('option');
-      o.value = n;
-      o.textContent = n;
-      o.style.color = '#1a1a1a';
-      if(n === projName) o.selected = true;
+      o.value = ''; o.textContent = '일치하는 콘서트가 없어요';
       pickSel.appendChild(o);
-    });
-    pickSel.onchange = () => { current = pickSel.value; render(); };
+      pickSel.disabled = true;
+    } else {
+      filtered.forEach(n => {
+        const o = document.createElement('option');
+        o.value = n; o.textContent = n; o.style.color = '#1a1a1a';
+        if(n === current) o.selected = true;
+        pickSel.appendChild(o);
+      });
+    }
+    pickSel.onchange = () => { current = pickSel.value; searchAll = false; render(); };
     pickRow.appendChild(pickSel);
 
-    const ownerNow = getOwnerForKnownName(projName);
+    if(projFilter.trim()){
+      const cnt = document.createElement('span');
+      cnt.textContent = pickNames.length + '개 중 ' + filtered.length + '개';
+      cnt.style.cssText = 'font-size:11px; color:#999; flex-shrink:0;';
+      pickRow.appendChild(cnt);
+    }
+
+    const ownerNow = current ? getOwnerForKnownName(current) : '';
     if(ownerNow){
       const ob = document.createElement('span');
       ob.textContent = getOwnerDisplay(ownerNow);
@@ -2164,10 +2267,59 @@ function openProjectHistory(projName){
     }
     box.appendChild(pickRow);
 
+    // ---- 이 콘서트 안에서 업무 검색 ----
+    const searchRow = document.createElement('div');
+    searchRow.style.cssText = 'display:flex; align-items:center; gap:6px; margin-bottom:12px;';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.id = 'projHistSearch';
+    searchInput.className = 'modal-input';
+    searchInput.placeholder = searchAll ? '모든 콘서트에서 업무 검색' : '이 콘서트에서 업무 검색';
+    searchInput.value = taskQuery;
+    searchInput.style.cssText = 'flex:1;' + (searchAll ? ' border-color:#2563eb;' : '');
+    searchInput.oninput = () => { taskQuery = searchInput.value; render(); };
+    searchRow.appendChild(searchInput);
+    if(taskQuery.trim()){
+      const clearBtn = document.createElement('button');
+      clearBtn.textContent = '✕';
+      clearBtn.title = '검색 지우기';
+      clearBtn.style.cssText = 'font-size:12px; padding:8px 11px; height:auto; flex-shrink:0;';
+      clearBtn.onclick = () => { taskQuery = ''; searchAll = false; render(); };
+      searchRow.appendChild(clearBtn);
+    }
+    box.appendChild(searchRow);
+
+    // ---- 대상 모으기 ----
+    const tq = taskQuery.trim().toLowerCase();
+    let groups;
+    if(searchAll && tq){
+      groups = [];
+      pickNames.forEach(n => {
+        const entries = collectProjectTasks(n).filter(e => taskMatchesQuery(e.task, tq));
+        if(entries.length > 0) groups.push({ name: n, entries: entries });
+      });
+    } else if(current){
+      let entries = collectProjectTasks(current);
+      if(tq) entries = entries.filter(e => taskMatchesQuery(e.task, tq));
+      groups = [{ name: current, entries: entries }];
+    } else {
+      groups = [];
+    }
+
+    // 집계 (일정은 빼고 할 일만)
+    const allTasks = [];
+    groups.forEach(g => g.entries.forEach(e => { if(!e.task.category) allTasks.push(e); }));
+    const doneCnt = allTasks.filter(e => e.task.done).length;
+    const total = allTasks.length;
+    const pct = total ? Math.round(doneCnt / total * 100) : 0;
+    const overdue = allTasks.filter(e => !e.task.done && parseDateLabel(e.date) < today).length;
+
     // ---- 요약 ----
     const summary = document.createElement('div');
     summary.style.cssText = 'display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px;';
     summary.innerHTML =
+      (searchAll && tq ? '<span style="font-size:12px; color:#2563eb; font-weight:600;">모든 콘서트 · ' + groups.length + '개에서 발견</span>' : '') +
+      (tq && !searchAll ? '<span style="font-size:12px; color:#2563eb; font-weight:600;">검색 결과</span>' : '') +
       '<span style="font-size:13px; color:#555;">완료 <b>' + doneCnt + '</b> / ' + total + '</span>' +
       '<span style="flex:1 1 120px; min-width:100px; height:8px; background:#eeece6; border-radius:4px; overflow:hidden;">' +
         '<span style="display:block; height:100%; width:' + pct + '%; background:#2ea043; border-radius:4px;"></span></span>' +
@@ -2190,99 +2342,79 @@ function openProjectHistory(projName){
 
     // ---- 목록 ----
     const listWrap = document.createElement('div');
-    listWrap.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden; max-height:52vh; overflow-y:auto;';
-
+    listWrap.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden; max-height:50vh; overflow-y:auto;';
     let shown = 0;
-    let lastDate = null;
-    entries.forEach(e => {
-      const t = e.task;
-      const isEvent = !!t.category;
-      if(!isEvent){
-        if(mode === 'open' && t.done) return;
-        if(mode === 'done' && !t.done) return;
-      } else if(mode !== 'all'){
-        return; // 일정은 "전체"에서만 함께 보여 줌
-      }
-      shown++;
 
-      if(e.date !== lastDate){
-        lastDate = e.date;
-        const past = parseDateLabel(e.date) < today;
+    groups.forEach(g => {
+      const rows = g.entries.filter(e => passesMode(e.task));
+      if(rows.length === 0) return;
+
+      if(searchAll && tq){
+        // 여러 콘서트를 한꺼번에 찾을 때만 콘서트명을 머리글로
+        const gAccent = colorFor(g.name);
+        const owner = getOwnerForKnownName(g.name);
         const head = document.createElement('div');
-        head.style.cssText = 'position:sticky; top:0; z-index:1; background:#faf9f6; border-top:1px solid #e8e6e0; padding:6px 12px; font-size:11px; font-weight:700; color:' + (past ? '#aaa' : '#555') + ';';
-        head.textContent = formatDateShort(e.date) + (past ? ' · 지남' : '');
+        head.style.cssText = 'position:sticky; top:0; z-index:2; display:flex; align-items:center; gap:7px; flex-wrap:wrap; background:#f6f5f1; border-top:1px solid #e8e6e0; padding:7px 12px;';
+        head.innerHTML =
+          '<span style="width:9px;height:9px;border-radius:50%;background:' + gAccent + ';flex-shrink:0;"></span>' +
+          '<span style="font-size:12.5px; font-weight:700; color:' + gAccent + ';">' + escapeHtml(g.name) + '</span>' +
+          (owner ? '<span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + ownerColorFor(owner) + '22; border:1px solid ' + ownerColorFor(owner) + '55; color:' + ownerColorFor(owner) + ';">' + escapeHtml(getOwnerDisplay(owner)) + '</span>' : '') +
+          ddayBadgeHtml(g.name, 9) +
+          '<span style="flex:1;"></span>' +
+          '<span style="font-size:11px; color:#888;">' + rows.length + '건</span>';
         listWrap.appendChild(head);
+        rows.forEach(e => { shown++; listWrap.appendChild(makeRow(e, true, true)); });
+      } else {
+        // 평소에는 날짜별 머리글
+        let lastDate = null;
+        rows.forEach(e => {
+          if(e.date !== lastDate){
+            lastDate = e.date;
+            const past = parseDateLabel(e.date) < today;
+            const head = document.createElement('div');
+            head.style.cssText = 'position:sticky; top:0; z-index:1; background:#faf9f6; border-top:1px solid #e8e6e0; padding:6px 12px; font-size:11px; font-weight:700; color:' + (past ? '#aaa' : '#555') + ';';
+            head.textContent = formatDateShort(e.date) + (past ? ' · 지남' : '');
+            listWrap.appendChild(head);
+          }
+          shown++;
+          listWrap.appendChild(makeRow(e, false, false));
+        });
       }
-
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex; align-items:flex-start; gap:9px; padding:9px 12px; font-size:13px; background:#fff; border-top:1px solid #f3f1ec;';
-
-      if(isEvent){
-        const c = getCategoryColor(t.category);
-        row.innerHTML =
-          '<span style="width:9px;height:9px;border-radius:2px;background:' + c + ';flex-shrink:0;margin-top:4px;"></span>' +
-          '<span style="flex:1; color:#777;">' + escapeHtml(t.text || '(제목 없음)') +
-          ' <span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + c + '22; border:1px solid ' + c + '55; color:' + c + ';">' + escapeHtml(t.category) + '</span></span>';
-        listWrap.appendChild(row);
-        return;
-      }
-
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = !!t.done;
-      cb.style.cssText = 'width:16px; height:16px; flex-shrink:0; margin-top:2px;';
-      cb.onchange = () => {
-        t.done = cb.checked;
-        setStatus('저장 중...');
-        apiUpdate({ id: t.id, done: t.done }).then(() => setStatus('동기화됨'));
-        renderAll();
-        render();
-      };
-      row.appendChild(cb);
-
-      const textWrap = document.createElement('span');
-      textWrap.style.cssText = 'flex:1; min-width:0;';
-      const line = document.createElement('div');
-      line.textContent = t.text || '(내용 없음)';
-      // 완료한 일도 잘 읽히도록 취소선 없이 글자 굵기/색만 다르게
-      line.style.cssText = 'word-break:break-all; font-weight:600;' +
-        (t.done ? ' color:#6b7280; font-weight:500;' : '');
-      textWrap.appendChild(line);
-      if(t.tag){
-        const tag = document.createElement('span');
-        tag.textContent = '#' + t.tag;
-        tag.style.cssText = 'display:inline-block; margin-top:3px; font-size:9px; padding:1px 5px; border-radius:4px; background:#eef2ff; color:#4a5fb5;';
-        textWrap.appendChild(tag);
-      }
-      if(t.details && String(t.details).trim()){
-        const det = document.createElement('div');
-        det.textContent = String(t.details).replace(/\s+/g, ' ').trim();
-        det.style.cssText = 'margin-top:3px; font-size:11.5px; color:#8a8578; word-break:break-all;';
-        textWrap.appendChild(det);
-      }
-      row.appendChild(textWrap);
-
-      const goBtn = document.createElement('button');
-      goBtn.textContent = '이동';
-      goBtn.title = '이 날짜로 가기';
-      goBtn.style.cssText = 'font-size:11px; padding:3px 9px; height:auto; flex-shrink:0;';
-      goBtn.onclick = () => {
-        selectedDate = parseDateLabel(e.date);
-        ensureGroupForSelectedDate();
-        close();
-        renderAll();
-      };
-      row.appendChild(goBtn);
-
-      listWrap.appendChild(row);
     });
 
     if(shown === 0){
       const empty = document.createElement('div');
-      empty.style.cssText = 'padding:20px; font-size:12px; color:#999; text-align:center;';
-      empty.textContent = mode === 'open' ? '미완료 할 일이 없어요. 전부 끝냈네요.' :
-                          (mode === 'done' ? '완료한 할 일이 아직 없어요.' : '등록된 할 일이 없어요.');
-      listWrap.appendChild(empty);
+      empty.style.cssText = 'padding:22px 16px; font-size:12px; color:#999; text-align:center;';
+      if(tq){
+        empty.textContent = searchAll
+          ? ('어느 콘서트에도 "' + taskQuery.trim() + '"에 해당하는 업무가 없어요.')
+          : ('"' + current + '"에는 "' + taskQuery.trim() + '"에 해당하는 업무가 없어요.');
+        listWrap.appendChild(empty);
+        if(!searchAll){
+          const wider = document.createElement('div');
+          wider.style.cssText = 'padding:0 16px 18px; text-align:center;';
+          const wb = document.createElement('button');
+          wb.textContent = '모든 콘서트에서 찾아보기';
+          wb.style.cssText = 'font-size:12px; padding:7px 14px; height:auto;';
+          wb.onclick = () => { searchAll = true; render(); };
+          wider.appendChild(wb);
+          listWrap.appendChild(wider);
+        }
+      } else {
+        empty.textContent = mode === 'open' ? '미완료 할 일이 없어요. 전부 끝냈네요.' :
+          (mode === 'done' ? '완료한 할 일이 아직 없어요.' : '등록된 할 일이 없어요.');
+        listWrap.appendChild(empty);
+      }
+    } else if(tq && !searchAll){
+      // 이 콘서트에서 찾았더라도 다른 곳도 볼 수 있게
+      const wider = document.createElement('div');
+      wider.style.cssText = 'padding:10px 16px; text-align:center; background:#faf9f6; border-top:1px solid #e8e6e0;';
+      const wb = document.createElement('button');
+      wb.textContent = '다른 콘서트에서도 찾기';
+      wb.style.cssText = 'font-size:11px; padding:5px 12px; height:auto;';
+      wb.onclick = () => { searchAll = true; render(); };
+      wider.appendChild(wb);
+      listWrap.appendChild(wider);
     }
     box.appendChild(listWrap);
 
@@ -2293,6 +2425,11 @@ function openProjectHistory(projName){
     closeBtn.onclick = close;
     actions.appendChild(closeBtn);
     box.appendChild(actions);
+
+    if(focusId){
+      const el = box.querySelector('#' + focusId);
+      if(el){ el.focus(); try { el.setSelectionRange(caret, caret); } catch(err){} }
+    }
   }
 
   render();
