@@ -4121,11 +4121,21 @@ function stickyAutoLabel(note, idx){
   return '메모 ' + (idx + 1);
 }
 
+function moveStickyNote(from, to){
+  if(from === to || from < 0 || to < 0) return;
+  const moved = stickyNotes.splice(from, 1)[0];
+  stickyNotes.splice(to, 0, moved);
+  saveStickyNotes();
+  renderStickyNotes();
+}
+
 function renderStickyNotes(){
   const wrap = document.getElementById('stickyNotesWrap');
   wrap.innerHTML = '';
   wrap.style.display = stickyNotesVisible ? 'flex' : 'none';
   if(!stickyNotesVisible) return;
+
+  let draggedNoteIdx = null;
 
   stickyNotes.forEach((note, idx) => {
     const collapsed = !!note.collapsed;
@@ -4135,6 +4145,46 @@ function renderStickyNotes(){
 
     const header = document.createElement('div');
     header.className = 'sticky-note-header';
+
+    // 손잡이를 누르고 있을 때만 카드가 끌리게 해서, 본문 글자 선택을 방해하지 않음
+    const dragHandle = document.createElement('span');
+    dragHandle.textContent = '⠿';
+    dragHandle.title = '끌어서 순서 바꾸기';
+    dragHandle.style.cssText = 'cursor:grab; color:#8a7f3d; opacity:0.45; font-size:12px; flex-shrink:0; user-select:none; line-height:1;';
+    dragHandle.addEventListener('mousedown', () => { card.draggable = true; });
+    dragHandle.addEventListener('mouseup', () => { card.draggable = false; });
+
+    card.addEventListener('dragstart', (e) => {
+      draggedNoteIdx = idx;
+      card.style.opacity = '0.4';
+      if(e.dataTransfer){
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(idx)); } catch(err){}
+      }
+    });
+    card.addEventListener('dragend', () => {
+      card.style.opacity = '1';
+      card.draggable = false;
+      draggedNoteIdx = null;
+      wrap.querySelectorAll('.sticky-note').forEach(c => { c.style.outline = ''; });
+    });
+    card.addEventListener('dragover', (e) => {
+      if(draggedNoteIdx === null || draggedNoteIdx === idx) return;
+      e.preventDefault();
+      card.style.outline = '2px dashed rgba(138,127,61,0.6)';
+      card.style.outlineOffset = '2px';
+    });
+    card.addEventListener('dragleave', () => { card.style.outline = ''; });
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.style.outline = '';
+      if(draggedNoteIdx !== null && draggedNoteIdx !== idx){
+        const from = draggedNoteIdx;
+        draggedNoteIdx = null;
+        moveStickyNote(from, idx);
+      }
+    });
+
     const title = document.createElement('input');
     title.type = 'text';
     title.className = 'sticky-note-title-input';
@@ -4179,6 +4229,7 @@ function renderStickyNotes(){
 
     headerBtns.appendChild(trashBtn);
     headerBtns.appendChild(collapseBtn);
+    header.appendChild(dragHandle);
     header.appendChild(title);
     header.appendChild(headerBtns);
     card.appendChild(header);
