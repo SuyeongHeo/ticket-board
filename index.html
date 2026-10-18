@@ -909,14 +909,14 @@ function getKnownOwners(){
 function ownerBelongsToTeam(ownerStr, team){
   if(!ownerStr || !team) return false;
   if(ownerTeams[ownerStr] === team) return true;
-  const parts = ownerStr.split(/[,\/]/).map(s => s.trim()).filter(Boolean);
+  const parts = splitOwnerNames(ownerStr);
   return parts.some(name => ownerTeams[name] === team);
 }
 
 function ownerIncludesPerson(ownerStr, person){
   if(!ownerStr || !person) return false;
   if(ownerStr === person) return true;
-  const parts = ownerStr.split(/[,\/]/).map(s => s.trim()).filter(Boolean);
+  const parts = splitOwnerNames(ownerStr);
   return parts.includes(person);
 }
 
@@ -1195,7 +1195,7 @@ function renderWeekly(){
     const ownerSortKey = (name) => {
       const o = getOwnerForKnownName(name) || '';
       if(!o) return '￿￿'; // 담당자 없는 건 맨 아래
-      const parts = o.split(/[,\/]/).map(x => x.trim()).filter(Boolean);
+      const parts = splitOwnerNames(o);
       const first = parts[0] || '';
       const team = ownerTeams[first] || '￿'; // 팀 미지정은 팀 그룹 뒤로
       // 팀 → 대표 담당자 → 혼자 담당(먼저) / 공동 담당(나중) → 담당자 조합 전체
@@ -2774,30 +2774,61 @@ function positionPanelNearAnchor(panel, rect){
   panel.style.overflowY = 'auto';
 }
 
-/* 담당자 이름을 비교용으로 다듬음.
-   "박찬희,서주현", "박찬희 , 서주현", "박찬희,  서주현" → 모두 "박찬희, 서주현" */
-function normalizeOwnerString(o){
+/* 담당자 이름 문자열을 사람 이름 배열로 쪼갬.
+   쉼표(, ，、), 가운뎃점(·), 슬래시, & 를 모두 구분자로 봄 */
+function splitOwnerNames(o){
   return String(o || '')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')  // 보이지 않는 문자 제거
-    .replace(/\u00A0/g, ' ')                  // 특수 공백 → 일반 공백
-    .split(/[,\/]/)
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')          // 보이지 않는 문자 제거
+    .replace(/[\u00A0\u3000]/g, ' ')                 // 특수 공백 → 일반 공백
+    .replace(/^\s*\[[^\]]*\]\s*/, '')              // 앞에 붙은 "[1팀] " 같은 표시 제거
+    .split(/[,\uFF0C\u3001\u00B7\/&]/)
     .map(x => x.trim().replace(/\s+/g, ' '))
-    .filter(Boolean)
-    .join(', ');
+    .filter(Boolean);
 }
 
-// 다듬고 나면 똑같아지는 담당자 이름들을 묶어서 돌려줌
+/* 비교·저장용 표준 형태.
+   "박찬희,서주현", "박찬희 , 서주현", "박찬희，서주현", "[1팀] 박찬희, 서주현"
+   → 모두 "박찬희, 서주현" */
+function normalizeOwnerString(o){
+  return splitOwnerNames(o).join(', ');
+}
+
+/* 중복 판정용 키 — 이름 순서가 달라도 같은 사람들이면 같은 키.
+   "서주현, 박찬희" 와 "박찬희, 서주현" 을 같은 조합으로 봄 */
+function ownerIdentityKey(o){
+  return splitOwnerNames(o).slice().sort((a,b) => a.localeCompare(b,'ko')).join('\u0001');
+}
+
+/* 같은 사람(들)을 가리키는데 글자만 다른 담당자 이름들을 묶어서 돌려줌.
+   대표 이름은 실제로 가장 많이 쓰인 표기를 고름 */
 function findDuplicateOwnerGroups(){
   const groups = {};
   getKnownOwners().forEach(n => {
-    const key = normalizeOwnerString(n);
+    const key = ownerIdentityKey(n);
     if(!key) return;
     if(!groups[key]) groups[key] = [];
     groups[key].push(n);
   });
   return Object.keys(groups)
-    .filter(k => groups[k].length > 1)
-    .map(k => ({ canonical: k, variants: groups[k] }));
+    .filter(k => {
+      const vs = groups[k];
+      if(vs.length > 1) return true;
+      // 혼자여도 표기가 지저분하면(예: "[1팀] 박찬희") 정리 대상
+      return vs[0] !== normalizeOwnerString(vs[0]);
+    })
+    .map(k => {
+      const vs = groups[k].slice();
+      let best = vs[0], bestCount = -1;
+      vs.forEach(v => {
+        const c = countOwnerUsage(v);
+        if(c > bestCount){ bestCount = c; best = v; }
+      });
+      return {
+        canonical: normalizeOwnerString(best),
+        variants: vs,
+        counts: vs.map(v => countOwnerUsage(v))
+      };
+    });
 }
 
 function mergeDuplicateOwners(){
@@ -2806,8 +2837,11 @@ function mergeDuplicateOwners(){
     alert('똑같은 담당자 이름이 중복된 건 없어요.');
     return false;
   }
-  const lines = groups.map(g => '· ' + g.variants.join('  +  ') + '  →  ' + g.canonical);
-  const ok = confirm('아래 담당자를 하나로 합칠까요?\n\n' + lines.join('\n') +
+  const lines = groups.map(g => {
+    const from = g.variants.map((v, i) => v + '(' + g.counts[i] + '개)').join('  +  ');
+    return '· ' + from + '\n   →  ' + g.canonical;
+  });
+  const ok = confirm('아래 담당자를 하나로 합칠까요?\n\n' + lines.join('\n\n') +
     '\n\n할 일에 적힌 담당자도 함께 바뀝니다.');
   if(!ok) return false;
 
