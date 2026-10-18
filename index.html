@@ -2244,8 +2244,9 @@ function openProjectHistory(projName){
       textWrap.style.cssText = 'flex:1; min-width:0;';
       const line = document.createElement('div');
       line.textContent = t.text || '(내용 없음)';
+      // 완료한 일도 잘 읽히도록 취소선 없이 글자 굵기/색만 다르게
       line.style.cssText = 'word-break:break-all; font-weight:600;' +
-        (t.done ? ' text-decoration:line-through; color:#aaa; font-weight:400;' : '');
+        (t.done ? ' color:#6b7280; font-weight:500;' : '');
       textWrap.appendChild(line);
       if(t.tag){
         const tag = document.createElement('span');
