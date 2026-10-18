@@ -252,6 +252,7 @@
       <span class="sync-status" id="syncStatus"></span>
     </div>
     <div style="display:flex; gap:8px; align-items:center; position:relative;">
+      <button id="projHistBtn" title="콘서트를 골라서 완료/미완료 업무를 한 번에 보기">📋 콘서트별 업무 현황</button>
       <button id="rolloverBtn" title="어제 미완료 할 일을 오늘로 옮기기">어제 미완료 가져오기</button>
       <button id="stickyNoteToggleBtn">메모</button>
       <button id="ownerBtn">내 이름 설정</button>
@@ -1265,17 +1266,7 @@ function renderWeekly(){
   // 전체보기 / 팀별보기 / 태그별보기 에서는 담당자별로 자동 그룹 정렬
   // (같은 담당자 안에서는 내가 드래그로 정한 순서를 그대로 유지)
   if(filterMode !== 'mine'){
-    const ownerSortKey = (name) => {
-      const o = getOwnerForKnownName(name) || '';
-      if(!o) return '￿￿'; // 담당자 없는 건 맨 아래
-      const parts = splitOwnerNames(o);
-      const first = parts[0] || '';
-      const team = ownerTeams[first] || '￿'; // 팀 미지정은 팀 그룹 뒤로
-      // 팀 → 대표 담당자 → 혼자 담당(먼저) / 공동 담당(나중) → 담당자 조합 전체
-      // 조합 전체까지 키에 넣어야 "박찬희"와 "박찬희, 서주현"이 섞이지 않음
-      return team + '\u0001' + first + '\u0001' +
-             String(parts.length).padStart(2, '0') + '\u0001' + parts.join(', ');
-    };
+    const ownerSortKey = ownerGroupSortKey;
     orderedNames.sort((a, b) => {
       const ka = ownerSortKey(a), kb = ownerSortKey(b);
       if(ka !== kb) return ka < kb ? -1 : 1;
@@ -1306,7 +1297,10 @@ function renderWeekly(){
       '<span style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">' +
       (owner ? '<span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + ownerColorFor(owner) + '22; border:1px solid ' + ownerColorFor(owner) + '55; color:' + ownerColorFor(owner) + ';">' + getOwnerDisplay(owner) + '</span>' : '') +
       ddayBadgeHtml(name, 9) + '</span>' +
-      '<span style="display:flex; align-items:center; gap:5px;"><span style="color:#ccc; font-size:12px; flex-shrink:0;">⠿</span><span style="width:8px;height:8px;border-radius:50%;background:' + accentColor + ';flex-shrink:0;display:inline-block;"></span><span style="word-break:break-all;">' + name + '</span></span>';
+      '<span style="display:flex; align-items:center; gap:5px;"><span style="color:#ccc; font-size:12px; flex-shrink:0;">⠿</span><span style="width:8px;height:8px;border-radius:50%;background:' + accentColor + ';flex-shrink:0;display:inline-block;"></span><span class="weekly-proj-name" style="word-break:break-all; cursor:pointer;" title="이 콘서트의 모든 할 일 보기">' + escapeHtml(name) + '</span></span>';
+
+    const nameEl = projCell.querySelector('.weekly-proj-name');
+    if(nameEl){ nameEl.onclick = () => { openProjectHistory(name); }; }
 
     projCell.addEventListener('dragstart', (e) => {
       draggedRowName = name;
@@ -2032,6 +2026,278 @@ function openEventModal(dateGroup, proj, editingTask){
   backdrop.addEventListener('mousedown', (e) => { if(e.target === backdrop) document.body.removeChild(backdrop); });
   document.body.appendChild(backdrop);
   titleInput.focus();
+}
+
+/* 담당자 기준 정렬 키 (주간보기·전체 업무 보기가 같은 순서를 쓰도록 공용)
+   팀 → 대표 담당자 → 혼자 담당(먼저)/공동 담당(나중) → 담당자 조합 전체 */
+function ownerGroupSortKey(name){
+  const o = getOwnerForKnownName(name) || '';
+  if(!o) return '\uffff\uffff'; // 담당자 없는 건 맨 아래
+  const parts = splitOwnerNames(o);
+  const first = parts[0] || '';
+  const team = ownerTeams[first] || '\uffff'; // 팀 미지정은 팀 그룹 뒤로
+  return team + '\u0001' + first + '\u0001' +
+         String(parts.length).padStart(2, '0') + '\u0001' + parts.join(', ');
+}
+
+/* 지금 필터(전체/내 업무/팀별)에서 보이는 콘서트들을 보드와 같은 순서로 */
+function getOrderedVisibleProjectNames(){
+  const names = [];
+  data.forEach(g => {
+    getVisibleProjects(g).forEach(pr => {
+      if(pr.tasks.length > 0 && names.indexOf(pr.name) === -1) names.push(pr.name);
+    });
+  });
+  const ordered = projectNameOrder.filter(n => names.indexOf(n) !== -1);
+  names.forEach(n => { if(ordered.indexOf(n) === -1) ordered.push(n); });
+  if(filterMode !== 'mine'){
+    ordered.sort((a, b) => {
+      const ka = ownerGroupSortKey(a), kb = ownerGroupSortKey(b);
+      return ka === kb ? 0 : (ka < kb ? -1 : 1);
+    });
+  }
+  return ordered;
+}
+
+/* 콘서트 하나의 모든 날짜 할 일을 한 화면에서 쭉 보여 줌 */
+function collectProjectTasks(projName){
+  const out = [];
+  data.forEach(g => {
+    g.projects.forEach(pr => {
+      if(pr.name !== projName) return;
+      pr.tasks.forEach(t => {
+        if(!t.category && !String(t.text || '').trim()) return; // 빈 줄은 제외
+        out.push({ task: t, date: g.date, dateGroup: g, proj: pr });
+      });
+    });
+  });
+  out.sort((a, b) => dateSortKey(a.date) - dateSortKey(b.date));
+  return out;
+}
+
+function openProjectHistory(projName){
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const box = document.createElement('div');
+  box.className = 'modal-box';
+  box.style.width = '720px';
+
+  let mode = 'open'; // open = 미완료만, done = 완료만, all = 전체
+
+  // 고를 수 있는 콘서트 목록 (지금 보기 필터 기준)
+  const pickNames = getOrderedVisibleProjectNames();
+  const allNames = getKnownProjectNames();
+  allNames.forEach(n => { if(pickNames.indexOf(n) === -1) pickNames.push(n); });
+  // 버튼으로 열었을 때는 지금 보고 있는 날짜의 첫 콘서트를 기본으로
+  let current = '';
+  if(projName && pickNames.indexOf(projName) !== -1){
+    current = projName;
+  } else {
+    const todayProjs = getVisibleProjects(data[activeIdx]).filter(pr => pr.tasks.length > 0);
+    const first = todayProjs.length ? todayProjs[0].name : '';
+    current = (first && pickNames.indexOf(first) !== -1) ? first : (pickNames[0] || '');
+  }
+
+  function close(){ if(backdrop.parentNode) document.body.removeChild(backdrop); }
+
+  function render(){
+    box.innerHTML = '';
+    if(!current){
+      const t = document.createElement('div');
+      t.className = 'modal-title';
+      t.textContent = '콘서트별 업무 현황';
+      box.appendChild(t);
+      const e = document.createElement('div');
+      e.style.cssText = 'font-size:12px; color:#999; padding:16px 2px;';
+      e.textContent = '볼 수 있는 콘서트가 없어요.';
+      box.appendChild(e);
+      const ac = document.createElement('div');
+      ac.className = 'modal-actions';
+      const cb2 = document.createElement('button');
+      cb2.textContent = '닫기'; cb2.onclick = close;
+      ac.appendChild(cb2); box.appendChild(ac);
+      return;
+    }
+    const projName = current;
+    const accent = colorFor(projName);
+    const entries = collectProjectTasks(projName);
+    const tasks = entries.filter(e => !e.task.category);
+    const doneCnt = tasks.filter(e => e.task.done).length;
+    const total = tasks.length;
+    const pct = total ? Math.round(doneCnt / total * 100) : 0;
+    const today = todayDate();
+    const overdue = tasks.filter(e => !e.task.done && parseDateLabel(e.date) < today).length;
+
+    // ---- 제목 + 콘서트 선택 ----
+    const title = document.createElement('div');
+    title.className = 'modal-title';
+    title.style.cssText += 'display:flex; align-items:center; gap:8px; flex-wrap:wrap;';
+    title.innerHTML =
+      '<span style="width:10px;height:10px;border-radius:50%;background:' + accent + ';flex-shrink:0;"></span>' +
+      '<span style="font-size:15px;">콘서트별 업무 현황</span>' +
+      ddayBadgeHtml(projName, 10);
+    box.appendChild(title);
+
+    const pickRow = document.createElement('div');
+    pickRow.style.cssText = 'display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px;';
+    const pickSel = document.createElement('select');
+    pickSel.className = 'modal-input';
+    pickSel.style.cssText = 'flex:1 1 220px; min-width:180px; font-weight:600; color:' + accent + ';';
+    pickNames.forEach(n => {
+      const o = document.createElement('option');
+      o.value = n;
+      o.textContent = n;
+      o.style.color = '#1a1a1a';
+      if(n === projName) o.selected = true;
+      pickSel.appendChild(o);
+    });
+    pickSel.onchange = () => { current = pickSel.value; render(); };
+    pickRow.appendChild(pickSel);
+
+    const ownerNow = getOwnerForKnownName(projName);
+    if(ownerNow){
+      const ob = document.createElement('span');
+      ob.textContent = getOwnerDisplay(ownerNow);
+      ob.style.cssText = 'font-size:10px; padding:3px 9px; border-radius:20px; flex-shrink:0; background:' +
+        ownerColorFor(ownerNow) + '22; border:1px solid ' + ownerColorFor(ownerNow) + '55; color:' + ownerColorFor(ownerNow) + ';';
+      pickRow.appendChild(ob);
+    }
+    box.appendChild(pickRow);
+
+    // ---- 요약 ----
+    const summary = document.createElement('div');
+    summary.style.cssText = 'display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px;';
+    summary.innerHTML =
+      '<span style="font-size:13px; color:#555;">완료 <b>' + doneCnt + '</b> / ' + total + '</span>' +
+      '<span style="flex:1 1 120px; min-width:100px; height:8px; background:#eeece6; border-radius:4px; overflow:hidden;">' +
+        '<span style="display:block; height:100%; width:' + pct + '%; background:#2ea043; border-radius:4px;"></span></span>' +
+      '<span style="font-size:13px; font-weight:600; color:#2ea043;">' + pct + '%</span>' +
+      (overdue > 0 ? '<span style="font-size:12px; color:#c0392b;">지난 날짜 미완료 ' + overdue + '건</span>' : '');
+    box.appendChild(summary);
+
+    // ---- 필터 ----
+    const filterRow = document.createElement('div');
+    filterRow.style.cssText = 'display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap;';
+    [['open','미완료 ' + (total - doneCnt)], ['done','완료 ' + doneCnt], ['all','전체 ' + total]].forEach(([v, label]) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText = 'font-size:12px; padding:6px 12px; height:auto;' +
+        (mode === v ? ' background:#2563eb; color:#fff; border-color:#2563eb;' : '');
+      b.onclick = () => { mode = v; render(); };
+      filterRow.appendChild(b);
+    });
+    box.appendChild(filterRow);
+
+    // ---- 목록 ----
+    const listWrap = document.createElement('div');
+    listWrap.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden; max-height:52vh; overflow-y:auto;';
+
+    let shown = 0;
+    let lastDate = null;
+    entries.forEach(e => {
+      const t = e.task;
+      const isEvent = !!t.category;
+      if(!isEvent){
+        if(mode === 'open' && t.done) return;
+        if(mode === 'done' && !t.done) return;
+      } else if(mode !== 'all'){
+        return; // 일정은 "전체"에서만 함께 보여 줌
+      }
+      shown++;
+
+      if(e.date !== lastDate){
+        lastDate = e.date;
+        const past = parseDateLabel(e.date) < today;
+        const head = document.createElement('div');
+        head.style.cssText = 'position:sticky; top:0; z-index:1; background:#faf9f6; border-top:1px solid #e8e6e0; padding:6px 12px; font-size:11px; font-weight:700; color:' + (past ? '#aaa' : '#555') + ';';
+        head.textContent = formatDateShort(e.date) + (past ? ' · 지남' : '');
+        listWrap.appendChild(head);
+      }
+
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:flex-start; gap:9px; padding:9px 12px; font-size:13px; background:#fff; border-top:1px solid #f3f1ec;';
+
+      if(isEvent){
+        const c = getCategoryColor(t.category);
+        row.innerHTML =
+          '<span style="width:9px;height:9px;border-radius:2px;background:' + c + ';flex-shrink:0;margin-top:4px;"></span>' +
+          '<span style="flex:1; color:#777;">' + escapeHtml(t.text || '(제목 없음)') +
+          ' <span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + c + '22; border:1px solid ' + c + '55; color:' + c + ';">' + escapeHtml(t.category) + '</span></span>';
+        listWrap.appendChild(row);
+        return;
+      }
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!t.done;
+      cb.style.cssText = 'width:16px; height:16px; flex-shrink:0; margin-top:2px;';
+      cb.onchange = () => {
+        t.done = cb.checked;
+        setStatus('저장 중...');
+        apiUpdate({ id: t.id, done: t.done }).then(() => setStatus('동기화됨'));
+        renderAll();
+        render();
+      };
+      row.appendChild(cb);
+
+      const textWrap = document.createElement('span');
+      textWrap.style.cssText = 'flex:1; min-width:0;';
+      const line = document.createElement('div');
+      line.textContent = t.text || '(내용 없음)';
+      line.style.cssText = 'word-break:break-all; font-weight:600;' +
+        (t.done ? ' text-decoration:line-through; color:#aaa; font-weight:400;' : '');
+      textWrap.appendChild(line);
+      if(t.tag){
+        const tag = document.createElement('span');
+        tag.textContent = '#' + t.tag;
+        tag.style.cssText = 'display:inline-block; margin-top:3px; font-size:9px; padding:1px 5px; border-radius:4px; background:#eef2ff; color:#4a5fb5;';
+        textWrap.appendChild(tag);
+      }
+      if(t.details && String(t.details).trim()){
+        const det = document.createElement('div');
+        det.textContent = String(t.details).replace(/\s+/g, ' ').trim();
+        det.style.cssText = 'margin-top:3px; font-size:11.5px; color:#8a8578; word-break:break-all;';
+        textWrap.appendChild(det);
+      }
+      row.appendChild(textWrap);
+
+      const goBtn = document.createElement('button');
+      goBtn.textContent = '이동';
+      goBtn.title = '이 날짜로 가기';
+      goBtn.style.cssText = 'font-size:11px; padding:3px 9px; height:auto; flex-shrink:0;';
+      goBtn.onclick = () => {
+        selectedDate = parseDateLabel(e.date);
+        ensureGroupForSelectedDate();
+        close();
+        renderAll();
+      };
+      row.appendChild(goBtn);
+
+      listWrap.appendChild(row);
+    });
+
+    if(shown === 0){
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding:20px; font-size:12px; color:#999; text-align:center;';
+      empty.textContent = mode === 'open' ? '미완료 할 일이 없어요. 전부 끝냈네요.' :
+                          (mode === 'done' ? '완료한 할 일이 아직 없어요.' : '등록된 할 일이 없어요.');
+      listWrap.appendChild(empty);
+    }
+    box.appendChild(listWrap);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-actions';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '닫기';
+    closeBtn.onclick = close;
+    actions.appendChild(closeBtn);
+    box.appendChild(actions);
+  }
+
+  render();
+  backdrop.appendChild(box);
+  backdrop.addEventListener('mousedown', (e) => { if(e.target === backdrop) close(); });
+  document.body.appendChild(backdrop);
 }
 
 function openShowDateManager(initialProjName){
@@ -3563,6 +3829,9 @@ function renderLeft(){
     nameSpan.className = 'proj-name';
     nameSpan.textContent = proj.name;
     nameSpan.style.color = accentColor;
+    nameSpan.style.cursor = 'pointer';
+    nameSpan.title = '이 콘서트의 모든 할 일 보기';
+    nameSpan.onclick = () => { openProjectHistory(proj.name); };
     nameWrap.appendChild(nameSpan);
     const ownerTag = document.createElement('button');
     ownerTag.textContent = projOwner ? getOwnerDisplay(projOwner) : '담당자 없음';
@@ -4108,6 +4377,7 @@ document.getElementById('manageOwnersBtn').onclick = () => {
 document.getElementById('viewFilterBtn').onclick = () => {
   openViewFilterPicker(document.getElementById('viewFilterBtn'));
 };
+document.getElementById('projHistBtn').onclick = () => { openProjectHistory(''); };
 document.getElementById('rolloverBtn').onclick = () => { rolloverIncompleteTasks(); };
 document.getElementById('todayBtn').onclick = () => { selectedDate = new Date(); ensureGroupForSelectedDate(); renderAll(); };
 
