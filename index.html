@@ -848,8 +848,9 @@ function openTaskTagPicker(anchorEl, currentTag, onSelect){
 }
 
 function registerOwnerName(name){
-  if(name && !knownOwnerNames.includes(name)){
-    knownOwnerNames.push(name);
+  const clean = normalizeOwnerString(name);
+  if(clean && !knownOwnerNames.includes(clean)){
+    knownOwnerNames.push(clean);
     saveKnownOwnerNames();
   }
 }
@@ -1573,8 +1574,8 @@ function setOwnerTeam(name, team){
 }
 
 function renameOwnerGlobally(oldName, newName){
-  if(!newName || !newName.trim() || newName.trim() === oldName) return;
-  const newVal = newName.trim();
+  const newVal = normalizeOwnerString(newName);
+  if(!newVal || newVal === oldName) return;
   const affectedTasks = [];
   data.forEach(g => {
     g.projects.forEach(p => {
@@ -2773,6 +2774,57 @@ function positionPanelNearAnchor(panel, rect){
   panel.style.overflowY = 'auto';
 }
 
+/* 담당자 이름을 비교용으로 다듬음.
+   "박찬희,서주현", "박찬희 , 서주현", "박찬희,  서주현" → 모두 "박찬희, 서주현" */
+function normalizeOwnerString(o){
+  return String(o || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')  // 보이지 않는 문자 제거
+    .replace(/\u00A0/g, ' ')                  // 특수 공백 → 일반 공백
+    .split(/[,\/]/)
+    .map(x => x.trim().replace(/\s+/g, ' '))
+    .filter(Boolean)
+    .join(', ');
+}
+
+// 다듬고 나면 똑같아지는 담당자 이름들을 묶어서 돌려줌
+function findDuplicateOwnerGroups(){
+  const groups = {};
+  getKnownOwners().forEach(n => {
+    const key = normalizeOwnerString(n);
+    if(!key) return;
+    if(!groups[key]) groups[key] = [];
+    groups[key].push(n);
+  });
+  return Object.keys(groups)
+    .filter(k => groups[k].length > 1)
+    .map(k => ({ canonical: k, variants: groups[k] }));
+}
+
+function mergeDuplicateOwners(){
+  const groups = findDuplicateOwnerGroups();
+  if(groups.length === 0){
+    alert('똑같은 담당자 이름이 중복된 건 없어요.');
+    return false;
+  }
+  const lines = groups.map(g => '· ' + g.variants.join('  +  ') + '  →  ' + g.canonical);
+  const ok = confirm('아래 담당자를 하나로 합칠까요?\n\n' + lines.join('\n') +
+    '\n\n할 일에 적힌 담당자도 함께 바뀝니다.');
+  if(!ok) return false;
+
+  groups.forEach(g => {
+    // 소속팀이 지정된 이름이 하나라도 있으면 그 팀을 유지
+    let team = '';
+    g.variants.forEach(v => { if(!team && ownerTeams[v]) team = ownerTeams[v]; });
+    g.variants.forEach(v => { if(v !== g.canonical) renameOwnerGlobally(v, g.canonical); });
+    if(team && !ownerTeams[g.canonical]){
+      ownerTeams[g.canonical] = team;
+      saveOwnerTeams();
+    }
+  });
+  renderAll();
+  return true;
+}
+
 function openOwnerManager(anchorEl){
   const rect = anchorEl.getBoundingClientRect();
   const panel = document.createElement('div');
@@ -2786,6 +2838,19 @@ function openOwnerManager(anchorEl){
     title.textContent = '이름 변경이나 소속팀을 설정할 수 있어요';
     title.style.cssText = 'font-size:11px; color:#999; padding:6px 8px;';
     panel.appendChild(title);
+
+    const dupGroups = findDuplicateOwnerGroups();
+    if(dupGroups.length > 0){
+      const mergeWrap = document.createElement('div');
+      mergeWrap.style.cssText = 'padding:0 6px 8px;';
+      const mergeBtn = document.createElement('button');
+      mergeBtn.textContent = '중복 이름 ' + dupGroups.length + '건 합치기';
+      mergeBtn.title = dupGroups.map(g => g.variants.join(' + ') + ' → ' + g.canonical).join('\n');
+      mergeBtn.style.cssText = 'width:100%; font-size:11px; padding:6px 8px; height:auto; background:#fdf6e8; border-color:#f0e0b8; color:#a9761f;';
+      mergeBtn.onclick = () => { if(mergeDuplicateOwners()) renderList(); };
+      mergeWrap.appendChild(mergeBtn);
+      panel.appendChild(mergeWrap);
+    }
 
     if(names.length === 0){
       const empty = document.createElement('div');
@@ -3160,7 +3225,8 @@ function openOwnerPicker(anchorEl, currentValue, onSelect){
     cleanup();
     if(val === '__new__'){
       openInlineTextInput(selectRect, '이름 입력 후 Enter', (name) => {
-        if(name && name.trim()){ onSelect(name.trim()); }
+        const clean = normalizeOwnerString(name);
+        if(clean){ onSelect(clean); }
       });
     } else if(val){
       onSelect(val);
