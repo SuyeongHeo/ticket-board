@@ -1194,9 +1194,13 @@ function renderWeekly(){
     const ownerSortKey = (name) => {
       const o = getOwnerForKnownName(name) || '';
       if(!o) return '￿￿'; // 담당자 없는 건 맨 아래
-      const first = o.split(/[,\/]/)[0].trim();
+      const parts = o.split(/[,\/]/).map(x => x.trim()).filter(Boolean);
+      const first = parts[0] || '';
       const team = ownerTeams[first] || '￿'; // 팀 미지정은 팀 그룹 뒤로
-      return team + '\u0001' + first;
+      // 팀 → 대표 담당자 → 혼자 담당(먼저) / 공동 담당(나중) → 담당자 조합 전체
+      // 조합 전체까지 키에 넣어야 "박찬희"와 "박찬희, 서주현"이 섞이지 않음
+      return team + '\u0001' + first + '\u0001' +
+             String(parts.length).padStart(2, '0') + '\u0001' + parts.join(', ');
     };
     orderedNames.sort((a, b) => {
       const ka = ownerSortKey(a), kb = ownerSortKey(b);
