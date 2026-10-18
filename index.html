@@ -27,8 +27,12 @@
   .sticky-toolbar button { background: rgba(255,255,255,0.5); border: 1px solid rgba(0,0,0,0.08); border-radius: 3px; font-size: 11px; padding: 2px 6px; height: auto; cursor: pointer; color: #5a5228; line-height: 1.4; }
   .sticky-toolbar button:hover { background: #fff; }
   .sticky-color-dot { width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.15); cursor: pointer; padding: 0; }
-  .sticky-note-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .sticky-note-header { display: flex; justify-content: space-between; align-items: center; gap: 4px; margin-bottom: 6px; }
   .sticky-note-title { font-size: 11px; color: #8a7f3d; font-weight: 600; }
+  .sticky-note-title-input { flex: 1 1 auto; min-width: 0; background: transparent; border: none; outline: none; font-family: inherit; font-size: 11px; font-weight: 600; color: #8a7f3d; padding: 1px 2px; border-radius: 3px; text-overflow: ellipsis; }
+  .sticky-note-title-input:hover { background: rgba(255,255,255,0.45); }
+  .sticky-note-title-input:focus { background: rgba(255,255,255,0.75); }
+  .sticky-note-title-input::placeholder { color: #8a7f3d; opacity: 0.55; font-weight: 500; }
   .sticky-note-close { background: none; border: none; cursor: pointer; font-size: 13px; color: #8a7f3d; padding: 0 2px; height: auto; }
   .sticky-add-btn { background: #fff; border: 1px dashed #d8c97d; color: #8a7f3d; border-radius: 4px; padding: 8px; font-size: 12px; cursor: pointer; flex-shrink: 0; }
   @media (max-width: 1650px) { .sticky-notes-wrap { display: none; } }
@@ -368,9 +372,9 @@ function todayDate(){
 /* 템플릿 항목이 기준으로 삼을 수 있는 날짜들.
    화면에 나오는 순서 = 실제로 일이 진행되는 순서 (공지 → 오픈 → 공연) */
 const BASE_TYPES = [
-  { id: 'notice', label: '오픈공지', prefix: '공지', color: '#4FB3BF', dateLabel: '오픈공지일' },
-  { id: 'open',   label: '티켓오픈', prefix: '오픈', color: '#1D9E75', dateLabel: '티켓오픈일' },
-  { id: 'show',   label: '공연일',   prefix: 'D',    color: '#4a7fb5', dateLabel: '공연일' }
+  { id: 'notice', label: '오픈공지', prefix: '공지', color: '#4FB3BF', dateLabel: '오픈공지일', inputLabel: '오픈공지일' },
+  { id: 'open',   label: '티켓오픈', prefix: '오픈', color: '#1D9E75', dateLabel: '티켓오픈일', inputLabel: '티켓오픈일 (첫 오픈일 기준)' },
+  { id: 'show',   label: '공연일',   prefix: 'D',    color: '#4a7fb5', dateLabel: '공연일',   inputLabel: '공연일 (첫 공연일 기준)' }
 ];
 
 function baseType(id){
@@ -2147,7 +2151,7 @@ function openShowDateManager(initialProjName){
   BASE_TYPES.forEach(bt => {
     const f = document.createElement('div');
     f.style.cssText = 'flex:1 1 150px;';
-    f.innerHTML = '<span class="modal-label" style="color:' + bt.color + '; font-weight:600;">' + bt.dateLabel + '</span>';
+    f.innerHTML = '<span class="modal-label" style="color:' + bt.color + '; font-weight:600;">' + (bt.inputLabel || bt.dateLabel) + '</span>';
     const inp = document.createElement('input');
     inp.type = 'date';
     inp.className = 'modal-input';
@@ -4090,7 +4094,7 @@ function saveStickyTrash(){
 function applyLoadedNotes(){
   if(!currentOwner) return;
   const mine = allUserNotes[currentOwner];
-  stickyNotes = (mine && mine.length > 0) ? mine : [{ html: '', color: STICKY_COLORS[0] }];
+  stickyNotes = (mine && mine.length > 0) ? mine : [{ html: '', color: STICKY_COLORS[0], title: '' }];
   stickyNotesTrash = allUserNotesTrash[currentOwner] || [];
   renderStickyNotes();
 }
@@ -4099,6 +4103,22 @@ function escapeHtml(str){
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+/* 제목이 비어 있으면 본문 첫 줄에서 요약을 만들어 보여 줌 */
+function stickyAutoLabel(note, idx){
+  const txt = String(note.html || '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/(div|p|li)>/gi, ' ')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if(txt) return txt.length > 20 ? (txt.slice(0, 20) + '…') : txt;
+  return '메모 ' + (idx + 1);
 }
 
 function renderStickyNotes(){
@@ -4115,16 +4135,20 @@ function renderStickyNotes(){
 
     const header = document.createElement('div');
     header.className = 'sticky-note-header';
-    const title = document.createElement('span');
-    title.className = 'sticky-note-title';
-    title.textContent = '메모 ' + (idx + 1);
-    title.style.cursor = 'pointer';
-    title.title = collapsed ? '펼치기' : '접기';
-    title.onclick = () => {
-      stickyNotes[idx].collapsed = !collapsed;
+    const title = document.createElement('input');
+    title.type = 'text';
+    title.className = 'sticky-note-title-input';
+    title.value = note.title || '';
+    title.placeholder = stickyAutoLabel(note, idx);
+    title.title = '메모 이름 (접었을 때도 보여요)';
+    title.maxLength = 40;
+    title.onchange = () => {
+      stickyNotes[idx].title = title.value.trim();
       saveStickyNotes();
-      renderStickyNotes();
     };
+    title.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter'){ e.preventDefault(); title.blur(); }
+    });
 
     const headerBtns = document.createElement('span');
     headerBtns.style.cssText = 'display:flex; gap:2px; align-items:center;';
@@ -4214,6 +4238,10 @@ function renderStickyNotes(){
     let saveTimer = null;
     body.addEventListener('input', () => {
       stickyNotes[idx].html = body.innerHTML;
+      // 제목을 따로 안 적었으면 본문 첫 줄이 이름 자리에 보이도록 갱신
+      if(!(stickyNotes[idx].title || '').trim()){
+        title.placeholder = stickyAutoLabel(stickyNotes[idx], idx);
+      }
       clearTimeout(saveTimer);
       saveTimer = setTimeout(saveStickyNotes, 400);
     });
@@ -4226,7 +4254,7 @@ function renderStickyNotes(){
   addBtn.className = 'sticky-add-btn';
   addBtn.textContent = '+ 메모 추가';
   addBtn.onclick = () => {
-    stickyNotes.push({ html: '', color: STICKY_COLORS[0] });
+    stickyNotes.push({ html: '', color: STICKY_COLORS[0], title: '' });
     saveStickyNotes();
     renderStickyNotes();
   };
@@ -4256,7 +4284,8 @@ function renderStickyNotes(){
       tHeader.className = 'sticky-note-header';
       const tTitle = document.createElement('span');
       tTitle.className = 'sticky-note-title';
-      tTitle.textContent = '삭제됨';
+      tTitle.style.cssText = 'flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+      tTitle.textContent = '삭제됨 · ' + ((tNote.title || '').trim() || stickyAutoLabel(tNote, tIdx));
       const restoreBtn = document.createElement('button');
       restoreBtn.className = 'sticky-note-close';
       restoreBtn.textContent = '↩';
