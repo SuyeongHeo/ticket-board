@@ -2170,8 +2170,12 @@ function openShowDateManager(initialProjName){
     const name = projSelect.value;
     const saved = getBaseDates(name);
     BASE_TYPES.forEach(bt => { dateInputs[bt.id].value = saved[bt.id] || ''; });
-    const o = getOwnerForKnownName(name) || currentOwner || '';
-    ownerSelect.value = getKnownOwners().includes(o) ? o : '';
+    // "내 이름 설정"에서 지정한 본인을 기본 담당자로 넣어 줌 (드롭다운에서 바꿀 수 있음)
+    const known = getKnownOwners();
+    const o = (currentOwner && known.includes(currentOwner))
+      ? currentOwner
+      : (getOwnerForKnownName(name) || '');
+    ownerSelect.value = known.includes(o) ? o : '';
     // 이 콘서트에 전에 쓴 템플릿이 있으면 그대로 다시 선택
     const prevTpl = getShowTemplateId(name);
     fillTemplateOptions(prevTpl && getTemplateById(prevTpl) ? prevTpl : (taskTemplates[0] ? taskTemplates[0].id : ''));
