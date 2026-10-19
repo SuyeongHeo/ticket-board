@@ -4255,13 +4255,14 @@ function openConcertPicker(anchorEl, dateGroup){
   placeholderOpt.selected = true;
   select.appendChild(placeholderOpt);
 
-  const newOpt = document.createElement('option');
-  newOpt.value = '__new__';
-  newOpt.textContent = '+ 새 콘서트 추가';
-  select.appendChild(newOpt);
-
   if(known.length > 0){
     fillProjectSelect(select, known, '');
+  } else {
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.disabled = true;
+    noneOpt.textContent = '콘서트명 관리에서 먼저 추가하세요';
+    select.appendChild(noneOpt);
   }
 
   document.body.appendChild(select);
@@ -4282,13 +4283,7 @@ function openConcertPicker(anchorEl, dateGroup){
     const val = select.value;
     const selectRect = select.getBoundingClientRect();
     cleanup();
-    if(val === '__new__'){
-      openInlineTextInput(selectRect, '콘서트명 입력 후 Enter', (name) => {
-        if(name && name.trim()){
-          addProjectToDateGroup(dateGroup, name.trim());
-        }
-      });
-    } else if(val){
+    if(val){
       addProjectToDateGroup(dateGroup, val);
     }
   });
@@ -4321,7 +4316,8 @@ function renderLeft(){
   const btnGroup = document.createElement('div');
   btnGroup.style.cssText = 'display:flex; gap:6px;';
   const addProjBtn = document.createElement('button');
-  addProjBtn.textContent = '+ 콘서트';
+  addProjBtn.textContent = '+ 업무';
+  addProjBtn.title = '이 날짜에 콘서트를 골라 할 일 칸을 만들어요 (콘서트명 추가는 "콘서트명 관리"에서)';
   addProjBtn.onclick = () => { openConcertPicker(addProjBtn, dateGroup); };
   btnGroup.appendChild(addProjBtn);
   const manageBtn = document.createElement('button');
