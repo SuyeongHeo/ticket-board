@@ -2503,7 +2503,7 @@ function openProjectHistory(projName){
       (overdue > 0 ? '<span style="font-size:12px; color:#c0392b;">지난 날짜 미완료 ' + overdue + '건</span>' : '');
 
     filterRow.innerHTML = '';
-    [['open','미완료 ' + (total - doneCnt)], ['done','완료 ' + doneCnt], ['all','전체 ' + total]].forEach(([v, label]) => {
+    [['all','전체 ' + total], ['open','미완료 ' + (total - doneCnt)], ['done','완료 ' + doneCnt]].forEach(([v, label]) => {
       const b = document.createElement('button');
       b.textContent = label;
       b.style.cssText = 'font-size:12px; padding:6px 12px; height:auto;' +
