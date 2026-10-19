@@ -505,6 +505,36 @@ function getNoticeDate(projName){
   return v.noticeDate || '';
 }
 
+/* 공연일·티켓오픈은 여러 날일 수 있음 (공연 2~3일, 선예매/일반예매 등).
+   목록은 showDateLists에 저장하고, 기준일(date/openDate/noticeDate)은 그중 가장 빠른 날 */
+function getBaseDateList(projName, baseId){
+  const v = showDates[projName];
+  if(!v || typeof v === 'string'){
+    // 예전 데이터: 날짜 하나만 있던 시절
+    const one = (typeof v === 'string' && baseId === 'show') ? v : '';
+    return one ? [{ date: one, label: '' }] : [];
+  }
+  const key = baseId + 'List';
+  if(Array.isArray(v[key]) && v[key].length > 0){
+    return v[key].filter(x => x && x.date).map(x => ({ date: x.date, label: x.label || '' }));
+  }
+  // 목록이 없으면 기존 단일 날짜를 한 건짜리 목록으로
+  const single = baseId === 'show' ? (v.date || '') : (baseId === 'open' ? (v.openDate || '') : (v.noticeDate || ''));
+  return single ? [{ date: single, label: '' }] : [];
+}
+
+function getAllBaseDateLists(projName){
+  const o = {};
+  BASE_TYPES.forEach(bt => { o[bt.id] = getBaseDateList(projName, bt.id); });
+  return o;
+}
+
+// 목록에서 가장 빠른 날짜 (기준일)
+function earliestDate(list){
+  const ds = (list || []).map(x => x && x.date).filter(Boolean).sort();
+  return ds.length ? ds[0] : '';
+}
+
 // 콘서트에 저장된 기준일 묶음
 function getBaseDates(projName){
   return { show: getShowDate(projName), open: getOpenDate(projName), notice: getNoticeDate(projName) };
@@ -516,11 +546,20 @@ function getShowTemplateId(projName){
   return v.template || '';
 }
 
-function setShowDateEntry(projName, baseDates, templateId){
+/* lists = { show:[{date,label}], open:[...], notice:[...] }
+   기준일은 각 목록의 가장 빠른 날짜로 자동 계산해 함께 저장 */
+function setShowDateEntry(projName, lists, templateId){
+  const clean = (arr) => (arr || []).filter(x => x && x.date)
+    .map(x => ({ date: x.date, label: (x.label || '').trim() }))
+    .sort((a,b) => a.date < b.date ? -1 : (a.date > b.date ? 1 : 0));
+  const showList = clean(lists.show), openList = clean(lists.open), noticeList = clean(lists.notice);
   showDates[projName] = {
-    date: baseDates.show || '',
-    openDate: baseDates.open || '',
-    noticeDate: baseDates.notice || '',
+    date: earliestDate(showList),
+    openDate: earliestDate(openList),
+    noticeDate: earliestDate(noticeList),
+    showList: showList,
+    openList: openList,
+    noticeList: noticeList,
     template: templateId || ''
   };
 }
@@ -1834,12 +1873,7 @@ function openEventModal(dateGroup, proj, editingTask){
       opt.textContent = '등록된 콘서트가 없어요';
       projSelect.appendChild(opt);
     } else {
-      knownNames.forEach(n => {
-        const opt = document.createElement('option');
-        opt.value = n;
-        opt.textContent = n;
-        projSelect.appendChild(opt);
-      });
+      fillProjectSelect(projSelect, knownNames, '');
     }
     projField.appendChild(projSelect);
     box.appendChild(projField);
@@ -2038,6 +2072,46 @@ function ownerGroupSortKey(name){
   const team = ownerTeams[first] || '\uffff'; // 팀 미지정은 팀 그룹 뒤로
   return team + '\u0001' + first + '\u0001' +
          String(parts.length).padStart(2, '0') + '\u0001' + parts.join(', ');
+}
+
+/* 콘서트 목록을 "내 콘서트"와 "나머지"로 나눔 (각자 원래 순서는 유지) */
+function splitMyProjectNames(names){
+  const mine = [], others = [];
+  (names || []).forEach(n => {
+    const o = getOwnerForKnownName(n) || '';
+    if(currentOwner && o && ownerIncludesPerson(o, currentOwner)) mine.push(n);
+    else others.push(n);
+  });
+  return { mine: mine, others: others };
+}
+
+/* 셀렉트에 "내 콘서트 / 다른 콘서트" 묶음으로 채워 넣기 */
+function fillProjectSelect(select, names, selectedValue){
+  const split = splitMyProjectNames(names);
+  const addGroup = (label, arr) => {
+    if(arr.length === 0) return;
+    const grp = document.createElement('optgroup');
+    grp.label = label;
+    arr.forEach(n => {
+      const o = document.createElement('option');
+      o.value = n; o.textContent = n;
+      if(n === selectedValue) o.selected = true;
+      grp.appendChild(o);
+    });
+    select.appendChild(grp);
+  };
+  if(split.mine.length > 0 && split.others.length > 0){
+    addGroup('내 콘서트', split.mine);
+    addGroup('다른 콘서트', split.others);
+  } else {
+    // 한쪽만 있으면 묶음 없이 평범하게
+    (split.mine.length ? split.mine : split.others).forEach(n => {
+      const o = document.createElement('option');
+      o.value = n; o.textContent = n;
+      if(n === selectedValue) o.selected = true;
+      select.appendChild(o);
+    });
+  }
 }
 
 /* 지금 필터(전체/내 업무/팀별)에서 보이는 콘서트들을 보드와 같은 순서로 */
@@ -2272,12 +2346,8 @@ function openProjectHistory(projName){
       pickSel.disabled = true;
     } else {
       pickSel.disabled = false;
-      filtered.forEach(n => {
-        const o = document.createElement('option');
-        o.value = n; o.textContent = n; o.style.color = '#1a1a1a';
-        if(n === current) o.selected = true;
-        pickSel.appendChild(o);
-      });
+      fillProjectSelect(pickSel, filtered, current);
+      [...pickSel.querySelectorAll('option')].forEach(o => { o.style.color = '#1a1a1a'; });
     }
 
     const accent = current ? colorFor(current) : '#999';
@@ -2495,10 +2565,16 @@ function openShowDateManager(initialProjName){
       const row = document.createElement('div');
       row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:9px 12px; font-size:12px;' +
         (i % 2 ? 'background:#faf9f6;' : 'background:#fff;');
-      const bd = getBaseDates(n);
+      const lists = getAllBaseDateLists(n);
       const showD = fromISODate(getShowDate(n));
-      const extra = BASE_TYPES.filter(bt => bt.id !== 'show' && bd[bt.id])
-        .map(bt => '<span style="color:' + bt.color + ';">' + bt.prefix + ' ' + formatDateShort(fromISODate(bd[bt.id])) + '</span>')
+      const showCnt = (lists.show || []).length;
+      const extra = BASE_TYPES.filter(bt => bt.id !== 'show' && (lists[bt.id] || []).length > 0)
+        .map(bt => {
+          const cnt = lists[bt.id].length;
+          const first = earliestDate(lists[bt.id]);
+          return '<span style="color:' + bt.color + ';">' + bt.prefix + ' ' +
+            formatDateShort(fromISODate(first)) + (cnt > 1 ? ' 외 ' + (cnt-1) : '') + '</span>';
+        })
         .join(' · ');
       const tplName = getShowTemplateName(n);
       row.innerHTML =
@@ -2506,6 +2582,7 @@ function openShowDateManager(initialProjName){
         (tplName ? '<span style="flex:0 0 auto; font-size:9px; padding:1px 6px; border-radius:20px; background:#eef2ff; border:1px solid #c9d4f5; color:#4a5fb5;">' + escapeHtml(tplName) + '</span>' : '') +
         ddayBadgeHtml(n, 10) +
         '<span style="flex:0 0 230px; color:#666; text-align:right; line-height:1.5;">' + formatDateShort(showD) +
+          (showCnt > 1 ? ' <span style="color:#999;">외 ' + (showCnt-1) + '일</span>' : '') +
           (extra ? '<br>' + extra : '') + '</span>' +
         '<span style="flex:0 0 112px; text-align:right; color:' + (cnt.overdue ? '#c0392b' : '#999') + ';">' +
           '미완료 ' + cnt.pending + '건' + (cnt.overdue ? ' · 지연 ' + cnt.overdue : '') + '</span>';
@@ -2548,11 +2625,7 @@ function openShowDateManager(initialProjName){
     opt.value = ''; opt.textContent = '등록된 콘서트가 없어요';
     projSelect.appendChild(opt);
   } else {
-    knownNames.forEach(n => {
-      const opt = document.createElement('option');
-      opt.value = n; opt.textContent = n;
-      projSelect.appendChild(opt);
-    });
+    fillProjectSelect(projSelect, knownNames, '');
   }
   if(initialProjName && knownNames.includes(initialProjName)) projSelect.value = initialProjName;
   projField.appendChild(projSelect);
@@ -2603,32 +2676,134 @@ function openShowDateManager(initialProjName){
   inputRow.appendChild(ownerField);
   formWrap.appendChild(inputRow);
 
-  // 기준일 입력줄 (오픈공지일 / 티켓오픈일 / 공연일)
+  /* 기준일 입력 — 공연 2~3일, 선예매/일반예매처럼 날짜를 여러 개 넣을 수 있음.
+     기한 계산의 기준은 각 목록에서 "가장 빠른 날짜" */
+  let dateLists = { notice: [], open: [], show: [] };
+
   const dateRow = document.createElement('div');
-  dateRow.style.cssText = 'display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px; background:#faf9f6; border:1px solid #eeece6; border-radius:10px; padding:10px 12px;';
-  const dateInputs = {};
-  BASE_TYPES.forEach(bt => {
-    const f = document.createElement('div');
-    f.style.cssText = 'flex:1 1 150px;';
-    f.innerHTML = '<span class="modal-label" style="color:' + bt.color + '; font-weight:600;">' + (bt.inputLabel || bt.dateLabel) + '</span>';
-    const inp = document.createElement('input');
-    inp.type = 'date';
-    inp.className = 'modal-input';
-    inp.title = bt.label + ' 기준 항목이 있을 때 필요해요';
-    inp.addEventListener('change', () => {
-      Object.keys(checkState).forEach(k => delete checkState[k]);
-      renderPreview();
-    });
-    f.appendChild(inp);
-    dateRow.appendChild(f);
-    dateInputs[bt.id] = inp;
-  });
+  dateRow.style.cssText = 'margin-bottom:14px; background:#faf9f6; border:1px solid #eeece6; border-radius:10px; padding:10px 12px;';
   formWrap.appendChild(dateRow);
 
   function currentBaseDates(){
     const o = {};
-    BASE_TYPES.forEach(bt => { o[bt.id] = dateInputs[bt.id].value || ''; });
+    BASE_TYPES.forEach(bt => { o[bt.id] = earliestDate(dateLists[bt.id]); });
     return o;
+  }
+
+  function renderDateArea(){
+    dateRow.innerHTML = '';
+    BASE_TYPES.forEach((bt, bi) => {
+      const block = document.createElement('div');
+      block.style.cssText = 'padding:' + (bi === 0 ? '0' : '10px') + ' 0 0; ' +
+        (bi === 0 ? '' : 'border-top:1px solid #eeece6; margin-top:8px;');
+
+      const head = document.createElement('div');
+      head.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;';
+      const lbl = document.createElement('span');
+      lbl.className = 'modal-label';
+      lbl.style.cssText = 'color:' + bt.color + '; font-weight:600; margin-bottom:0;';
+      const list = dateLists[bt.id];
+      const first = earliestDate(list);
+      lbl.textContent = bt.dateLabel + (list.length > 1 ? ' (' + list.length + '일)' : '');
+      head.appendChild(lbl);
+      if(list.length > 1 && first){
+        const note = document.createElement('span');
+        note.textContent = '기준: ' + formatDateShort(fromISODate(first));
+        note.style.cssText = 'font-size:10px; color:#999;';
+        head.appendChild(note);
+      }
+      const sp = document.createElement('span');
+      sp.style.flex = '1';
+      head.appendChild(sp);
+      const addBtn = document.createElement('button');
+      addBtn.textContent = '+ 날짜 추가';
+      addBtn.style.cssText = 'font-size:11px; padding:4px 9px; height:auto;';
+      addBtn.onclick = () => {
+        dateLists[bt.id].push({ date: '', label: '' });
+        renderDateArea();
+      };
+      head.appendChild(addBtn);
+      block.appendChild(head);
+
+      if(list.length === 0){
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:11px; color:#bbb; padding:2px 0 4px;';
+        empty.textContent = '날짜 없음 — "+ 날짜 추가"를 눌러 입력하세요.';
+        block.appendChild(empty);
+      }
+
+      list.forEach((item, idx) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; gap:6px; align-items:center; margin-bottom:5px;';
+
+        const dInp = document.createElement('input');
+        dInp.type = 'date';
+        dInp.className = 'modal-input';
+        dInp.style.cssText = 'flex:0 0 150px; min-width:130px;';
+        dInp.value = item.date || '';
+        dInp.onchange = () => {
+          item.date = dInp.value;
+          Object.keys(checkState).forEach(k => delete checkState[k]);
+          renderDateArea();
+          renderPreview();
+        };
+        row.appendChild(dInp);
+
+        const nInp = document.createElement('input');
+        nInp.type = 'text';
+        nInp.className = 'modal-input';
+        nInp.style.cssText = 'flex:1 1 auto; min-width:100px;';
+        nInp.placeholder = bt.id === 'show' ? '이름 (예: 1일차)' :
+          (bt.id === 'open' ? '이름 (예: 선예매)' : '이름 (예: 오픈 공지)');
+        nInp.value = item.label || '';
+        // 한글 조합이 끊기지 않도록 입력 중에는 값만 담아 두고 다시 그리지 않음
+        nInp.oninput = () => { item.label = nInp.value; };
+        nInp.onchange = () => { item.label = nInp.value; renderPreview(); };
+        row.appendChild(nInp);
+
+        const del = document.createElement('button');
+        del.textContent = '✕';
+        del.title = '이 날짜 삭제';
+        del.style.cssText = 'font-size:12px; padding:6px 9px; height:auto; flex-shrink:0; color:#c0392b;';
+        del.onclick = () => {
+          dateLists[bt.id].splice(idx, 1);
+          Object.keys(checkState).forEach(k => delete checkState[k]);
+          renderDateArea();
+          renderPreview();
+        };
+        row.appendChild(del);
+
+        block.appendChild(row);
+      });
+
+      dateRow.appendChild(block);
+    });
+  }
+
+  /* 입력한 날짜들을 그대로 일정으로 만들기 위한 목록 */
+  function enteredDateEvents(){
+    const out = [];
+    BASE_TYPES.forEach(bt => {
+      const list = (dateLists[bt.id] || []).filter(x => x.date);
+      const sorted = list.slice().sort((a,b) => a.date < b.date ? -1 : 1);
+      sorted.forEach((item, i) => {
+        const label = (item.label || '').trim();
+        let text;
+        if(label) text = label;
+        else if(bt.id === 'show') text = sorted.length > 1 ? ('공연 ' + (i+1) + '일차') : '공연일';
+        else if(bt.id === 'open') text = sorted.length > 1 ? ('티켓 오픈 ' + (i+1)) : '티켓 오픈';
+        else text = sorted.length > 1 ? ('오픈 공지 ' + (i+1)) : '오픈 공지';
+        out.push({
+          baseId: bt.id,
+          category: bt.id === 'show' ? '공연일' : (bt.id === 'open' ? '티켓오픈' : '오픈공지'),
+          text: text,
+          date: fromISODate(item.date),
+          iso: item.date
+        });
+      });
+    });
+    out.sort((a,b) => a.date - b.date);
+    return out;
   }
 
   const previewWrap = document.createElement('div');
@@ -2636,8 +2811,9 @@ function openShowDateManager(initialProjName){
 
   function onProjChange(){
     const name = projSelect.value;
-    const saved = getBaseDates(name);
-    BASE_TYPES.forEach(bt => { dateInputs[bt.id].value = saved[bt.id] || ''; });
+    dateLists = getAllBaseDateLists(name);
+    BASE_TYPES.forEach(bt => { if(!dateLists[bt.id]) dateLists[bt.id] = []; });
+    renderDateArea();
     // "내 이름 설정"에서 지정한 본인을 기본 담당자로 넣어 줌 (드롭다운에서 바꿀 수 있음)
     const known = getKnownOwners();
     const o = (currentOwner && known.includes(currentOwner))
@@ -2682,22 +2858,25 @@ function openShowDateManager(initialProjName){
       return;
     }
     const tplSet = getTemplateById(tplSelect.value);
+    // 입력한 날짜들을 그대로 일정으로 (공연 2일차, 선예매 등)
+    const dateEvents = enteredDateEvents().map(ev => ({ ev: ev, date: ev.date }));
     // 각 항목을 자기 기준일로 계산한 뒤 실제 날짜순으로 정렬
-    const sorted = (tplSet ? (tplSet.items || []) : []).slice()
+    const sorted = dateEvents.concat((tplSet ? (tplSet.items || []) : []).slice()
       .map(t => {
         const bIso = baseIsoFor(t, baseDates);
         return { tpl: t, date: bIso ? dateFromOffset(bIso, t.offset) : null };
-      })
+      }))
       .sort((a,b) => {
         if(a.date && b.date) return a.date - b.date;
         if(a.date) return -1;
         if(b.date) return 1;
+        if(!a.tpl || !b.tpl) return 0;
         return (baseRankOf(a.tpl) - baseRankOf(b.tpl)) || ((a.tpl.offset||0) - (b.tpl.offset||0));
       });
     // 기준일이 비어서 만들 수 없는 항목을 기준별로 집계
     const missingByBase = {};
     sorted.forEach(x => {
-      if(x.date) return;
+      if(x.date || !x.tpl) return;
       const id = baseType(x.tpl.base).id;
       missingByBase[id] = (missingByBase[id] || 0) + 1;
     });
@@ -2728,10 +2907,14 @@ function openShowDateManager(initialProjName){
     const boxes = [];
 
     sorted.forEach((entry, i) => {
+      const isDateEvent = !!entry.ev;
       const tpl = entry.tpl;
       const d = entry.date;
-      const dup = findExistingGenerated(name, tpl.name);
-      const key = tpl.name + '@' + (tpl.base || 'show') + tpl.offset;
+      const itemName = isDateEvent ? entry.ev.text : tpl.name;
+      const dup = findExistingGenerated(name, itemName);
+      const key = isDateEvent
+        ? ('evt@' + entry.ev.baseId + '@' + entry.ev.iso + '@' + itemName)
+        : (tpl.name + '@' + (tpl.base || 'show') + tpl.offset);
       // 기준일이 없는 항목(티켓오픈일 미입력)은 만들 수 없음
       if(!d){ checkState[key] = false; }
       // 이미 만들어 둔 항목, 또는 날짜가 이미 지나버린 항목은 기본으로 체크 해제
@@ -2751,8 +2934,14 @@ function openShowDateManager(initialProjName){
       row.appendChild(cb);
 
       const offBadge = document.createElement('span');
-      offBadge.style.cssText = 'flex:0 0 60px; font-size:10px; font-weight:700; color:' + offsetLabelColor(tpl.offset, tpl.base) + ';';
-      offBadge.textContent = offsetLabel(tpl.offset, tpl.base);
+      if(isDateEvent){
+        const bc = baseType(entry.ev.baseId).color;
+        offBadge.style.cssText = 'flex:0 0 60px; font-size:10px; font-weight:700; color:' + bc + ';';
+        offBadge.textContent = '입력일';
+      } else {
+        offBadge.style.cssText = 'flex:0 0 60px; font-size:10px; font-weight:700; color:' + offsetLabelColor(tpl.offset, tpl.base) + ';';
+        offBadge.textContent = offsetLabel(tpl.offset, tpl.base);
+      }
       row.appendChild(offBadge);
 
       const dateCell = document.createElement('span');
@@ -2766,11 +2955,12 @@ function openShowDateManager(initialProjName){
       }
       row.appendChild(dateCell);
 
+      const cat = isDateEvent ? entry.ev.category : tpl.category;
       const typeCell = document.createElement('span');
       typeCell.style.cssText = 'flex:0 0 72px;';
-      if(tpl.type === 'event'){
-        const c = getCategoryColor(tpl.category);
-        typeCell.innerHTML = '<span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + c + '22; border:1px solid ' + c + '55; color:' + c + ';">' + escapeHtml(tpl.category || '일정') + '</span>';
+      if(isDateEvent || tpl.type === 'event'){
+        const c = getCategoryColor(cat);
+        typeCell.innerHTML = '<span style="font-size:9px; padding:1px 6px; border-radius:20px; background:' + c + '22; border:1px solid ' + c + '55; color:' + c + ';">' + escapeHtml(cat || '일정') + '</span>';
       } else {
         typeCell.innerHTML = '<span style="font-size:9px; color:#999;">할 일</span>';
       }
@@ -2778,8 +2968,8 @@ function openShowDateManager(initialProjName){
 
       const nameCell = document.createElement('span');
       nameCell.style.cssText = 'flex:1 1 auto; word-break:break-all;';
-      nameCell.innerHTML = escapeHtml(tpl.name) +
-        (tpl.tag ? ' <span style="font-size:9px; padding:1px 5px; border-radius:4px; background:#eef2ff; color:#4a5fb5;">#' + escapeHtml(tpl.tag) + '</span>' : '') +
+      nameCell.innerHTML = escapeHtml(itemName) +
+        (!isDateEvent && tpl.tag ? ' <span style="font-size:9px; padding:1px 5px; border-radius:4px; background:#eef2ff; color:#4a5fb5;">#' + escapeHtml(tpl.tag) + '</span>' : '') +
         (dup ? ' <span style="font-size:9px; color:#c08a2a;">이미 있음 (' + escapeHtml(formatDateShort(dup)) + ')</span>' : '');
       row.appendChild(nameCell);
 
@@ -2812,7 +3002,7 @@ function openShowDateManager(initialProjName){
     const saveOnlyBtn = document.createElement('button');
     saveOnlyBtn.textContent = '날짜만 저장';
     saveOnlyBtn.onclick = () => {
-      setShowDateEntry(name, baseDates, tplSelect.value);
+      setShowDateEntry(name, dateLists, tplSelect.value);
       saveShowDates();
       renderShowDateList();
       renderAll();
@@ -2841,46 +3031,57 @@ function openShowDateManager(initialProjName){
     return '';
   }
 
+  function entryKey(e){
+    return e.ev
+      ? ('evt@' + e.ev.baseId + '@' + e.ev.iso + '@' + e.ev.text)
+      : (e.tpl.name + '@' + (e.tpl.base || 'show') + e.tpl.offset);
+  }
+
   async function runGenerate(name, baseDates, sorted, btn){
-    const picked = sorted.filter(e => e.date && checkState[e.tpl.name + '@' + (e.tpl.base || 'show') + e.tpl.offset]);
+    const picked = sorted.filter(e => e.date && checkState[entryKey(e)]);
     if(picked.length === 0){
       if(!confirm('선택한 항목이 없어요. 날짜만 저장할까요?')) return;
-      setShowDateEntry(name, baseDates, tplSelect.value);
+      setShowDateEntry(name, dateLists, tplSelect.value);
       await saveShowDates();
       renderShowDateList();
       renderAll();
       return;
     }
-    const dateLines = BASE_TYPES.filter(bt => baseDates[bt.id])
-      .map(bt => bt.dateLabel + ' ' + formatDateShort(fromISODate(baseDates[bt.id])));
+    const dateLines = BASE_TYPES.filter(bt => (dateLists[bt.id] || []).some(x => x.date))
+      .map(bt => {
+        const ds = (dateLists[bt.id] || []).filter(x => x.date).map(x => x.date).sort();
+        const shown = ds.map(iso => formatDateShort(fromISODate(iso))).join(', ');
+        return bt.dateLabel + ' ' + shown + (ds.length > 1 ? '  (기준: ' + formatDateShort(fromISODate(ds[0])) + ')' : '');
+      });
     if(!confirm('"' + name + '"\n' + dateLines.join('\n') + '\n\n위 날짜를 저장하고 ' + picked.length + '개 항목을 만들까요?')) return;
 
     btn.disabled = true;
     const ownerVal = ownerSelect.value || '';
-    setShowDateEntry(name, baseDates, tplSelect.value);
+    setShowDateEntry(name, dateLists, tplSelect.value);
     await saveShowDates();
 
     for(let i = 0; i < picked.length; i++){
-      const tpl = picked[i].tpl;
+      const entry = picked[i];
+      const tpl = entry.tpl;
       btn.textContent = '만드는 중... (' + (i+1) + '/' + picked.length + ')';
       setStatus('만드는 중 ' + (i+1) + '/' + picked.length);
-      const d = picked[i].date;
+      const d = entry.date;
       const dateLabel = formatDateLabel(d);
-      const isEvent = tpl.type === 'event';
+      const isEvent = entry.ev ? true : (tpl.type === 'event');
       const body = {
         date: dateLabel,
         project: name,
-        text: tpl.name,
+        text: entry.ev ? entry.ev.text : tpl.name,
         assignee: '',
         deadline: '',
         done: false,
         details: '',
         owner: ownerVal,
-        category: isEvent ? (tpl.category || '기타') : '',
+        category: entry.ev ? entry.ev.category : (isEvent ? (tpl.category || '기타') : ''),
         endDate: isEvent ? dateLabel : '',
         endTime: '',
         allDay: isEvent ? true : false,
-        tag: tpl.tag || ''
+        tag: entry.ev ? '' : (tpl.tag || '')
       };
       let targetGroup = data.find(g => g.date === dateLabel);
       if(!targetGroup){
@@ -3839,15 +4040,7 @@ function openConcertPicker(anchorEl, dateGroup){
   select.appendChild(newOpt);
 
   if(known.length > 0){
-    const grp = document.createElement('optgroup');
-    grp.label = '기존 콘서트';
-    known.forEach(name => {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      grp.appendChild(opt);
-    });
-    select.appendChild(grp);
+    fillProjectSelect(select, known, '');
   }
 
   document.body.appendChild(select);
