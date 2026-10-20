@@ -296,7 +296,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-10-19a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-10-20a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -532,7 +532,7 @@ function getBaseDateList(projName, baseId){
   }
   const key = baseId + 'List';
   if(Array.isArray(v[key]) && v[key].length > 0){
-    return v[key].filter(x => x && x.date).map(x => ({ date: x.date, label: x.label || '' }));
+    return v[key].filter(x => x && x.date).map(x => ({ date: x.date, label: x.label || '', time: x.time || '' }));
   }
   // 목록이 없으면 기존 단일 날짜를 한 건짜리 목록으로
   const single = baseId === 'show' ? (v.date || '') : (baseId === 'open' ? (v.openDate || '') : (v.noticeDate || ''));
@@ -566,7 +566,7 @@ function getShowTemplateId(projName){
    기준일은 각 목록의 가장 빠른 날짜로 자동 계산해 함께 저장 */
 function setShowDateEntry(projName, lists, templateId){
   const clean = (arr) => (arr || []).filter(x => x && x.date)
-    .map(x => ({ date: x.date, label: (x.label || '').trim() }))
+    .map(x => ({ date: x.date, label: (x.label || '').trim(), time: (x.time || '').trim() }))
     .sort((a,b) => a.date < b.date ? -1 : (a.date > b.date ? 1 : 0));
   const showList = clean(lists.show), openList = clean(lists.open), noticeList = clean(lists.notice);
   showDates[projName] = {
@@ -1940,6 +1940,240 @@ function renameProjectGlobally(oldName, newName){
   Promise.all(affectedTasks.map(t => apiUpdate({ id: t.id, project: newVal }))).then(() => setStatus('동기화됨'));
 }
 
+/* ───────── 할 일 복제 ─────────
+   한 할 일을 다른 날짜(특히 이 콘서트의 오픈/공연 일정)로 그대로 복사 */
+function collectProjectBaseDates(projName){
+  const lists = getAllBaseDateLists(projName);
+  const out = [];
+  BASE_TYPES.forEach(bt => {
+    (lists[bt.id] || []).forEach(x => {
+      if(x && x.date) out.push({ iso: x.date, baseLabel: bt.label, label: (x.label || '').trim() });
+    });
+  });
+  out.sort((a,b) => a.iso < b.iso ? -1 : (a.iso > b.iso ? 1 : 0));
+  return out;
+}
+
+function taskExistsOnDate(projName, dateLabel, text){
+  const g = data.find(x => x.date === dateLabel);
+  if(!g) return false;
+  const pr = g.projects.find(x => x.name === projName);
+  if(!pr) return false;
+  return pr.tasks.some(t => (t.text || '').trim() === (text || '').trim());
+}
+
+function duplicateTaskToDates(task, projName, dateLabels){
+  if(dateLabels.length === 0) return;
+  let spanDays = 0;
+  if(task.endDate){
+    const sd = parseDateLabel(task.date), ed = parseDateLabel(task.endDate);
+    if(sd && ed) spanDays = Math.max(0, Math.round((ed - sd) / 86400000));
+  }
+  const created = [];
+  dateLabels.forEach(newDate => {
+    let g = data.find(x => x.date === newDate);
+    if(!g){ g = { date: newDate, projects: [] }; data.push(g); }
+    let pr = g.projects.find(x => x.name === projName);
+    if(!pr){ pr = { name: projName, tasks: [] }; g.projects.push(pr); }
+
+    let newEnd = '';
+    if(task.endDate){
+      const base = parseDateLabel(newDate);
+      base.setDate(base.getDate() + spanDays);
+      newEnd = formatDateLabel(base);
+    }
+    const copy = {
+      id: 'temp_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+      date: newDate,
+      project: projName,
+      text: task.text || '',
+      assignee: task.assignee || '',
+      deadline: task.deadline || '',
+      done: false,
+      details: task.details || '',
+      owner: task.owner || '',
+      category: task.category || '',
+      endDate: newEnd,
+      endTime: task.endTime || '',
+      allDay: !!task.allDay,
+      tag: task.tag || ''
+    };
+    pr.tasks.push(copy);
+    created.push(copy);
+  });
+
+  sortDataByDate();
+  renderAll();
+  setStatus('복제 중...');
+  Promise.all(created.map(c => apiAdd({
+    date: c.date, project: c.project, text: c.text, assignee: c.assignee, deadline: c.deadline,
+    done: false, details: c.details, owner: c.owner, category: c.category,
+    endDate: c.endDate, endTime: c.endTime, allDay: c.allDay, tag: c.tag
+  }).then(r => { if(r && r.id) c.id = r.id; }))).then(() => setStatus('동기화됨'));
+}
+
+function openDuplicateTaskModal(task, projName, currentDateLabel){
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const box = document.createElement('div');
+  box.className = 'modal-box';
+
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = '할 일 복제';
+  box.appendChild(title);
+
+  const what = document.createElement('div');
+  what.style.cssText = 'font-size:13px; color:#555; background:#f5f4f0; border-radius:8px; padding:10px 12px; margin-bottom:16px; word-break:break-all;';
+  what.textContent = (task.text || '(내용 없음)') + '  —  ' + projName;
+  box.appendChild(what);
+
+  const picked = {};   // 날짜 라벨 → true
+  const baseDates = collectProjectBaseDates(projName);
+
+  const sec1 = document.createElement('div');
+  sec1.style.cssText = 'margin-bottom:14px;';
+  const sec1Title = document.createElement('div');
+  sec1Title.textContent = '이 콘서트의 일정 날짜';
+  sec1Title.style.cssText = 'font-size:12px; font-weight:600; color:#444; margin-bottom:6px;';
+  sec1.appendChild(sec1Title);
+
+  const usable = baseDates.filter(bd => formatDateLabel(fromISODate(bd.iso)) !== currentDateLabel);
+  if(usable.length === 0){
+    const none = document.createElement('div');
+    none.style.cssText = 'font-size:12px; color:#999; padding:4px 0 2px;';
+    none.textContent = '복제할 만한 공연일/티켓오픈일이 없어요. 아래에서 날짜를 직접 고르면 돼요.';
+    sec1.appendChild(none);
+  } else {
+    // 기준 종류(오픈공지 / 티켓오픈 / 공연일)별로 묶어서 "전체" 한 번에 켜기
+    BASE_TYPES.forEach(bt => {
+      const mine = usable.filter(bd => bd.baseLabel === bt.label);
+      if(mine.length === 0) return;
+
+      const head = document.createElement('label');
+      head.style.cssText = 'display:flex; align-items:center; gap:8px; padding:8px 2px 4px; font-size:12px; font-weight:600; color:' + bt.color + '; cursor:pointer; border-top:1px solid #f0efea;';
+      const allCb = document.createElement('input');
+      allCb.type = 'checkbox';
+      const headTxt = document.createElement('span');
+      headTxt.textContent = bt.label + ' 전체 (' + mine.length + '일)';
+      head.appendChild(allCb); head.appendChild(headTxt);
+      sec1.appendChild(head);
+
+      const boxes = [];
+      mine.forEach(bd => {
+        const lbl = formatDateLabel(fromISODate(bd.iso));
+        const already = taskExistsOnDate(projName, lbl, task.text);
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:5px 2px 5px 20px; font-size:13px; cursor:pointer;' + (already ? ' color:#aaa;' : '');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.disabled = already;
+        cb.onchange = () => {
+          if(cb.checked) picked[lbl] = true; else delete picked[lbl];
+          allCb.checked = boxes.every(x => x.disabled || x.checked);
+          updateBtn();
+        };
+        boxes.push(cb);
+        const txt = document.createElement('span');
+        txt.textContent = formatDateShort(lbl) + (bd.label ? '  ' + bd.label : '') + (already ? '  (이미 있음)' : '');
+        row.appendChild(cb); row.appendChild(txt);
+        sec1.appendChild(row);
+      });
+
+      allCb.onchange = () => {
+        const want = allCb.checked;   // 루프 도중 값이 바뀌지 않도록 먼저 담아 둠
+        boxes.forEach(cb => {
+          if(cb.disabled) return;
+          cb.checked = want;
+          cb.onchange();
+        });
+        allCb.checked = want;
+        updateBtn();
+      };
+    });
+  }
+  box.appendChild(sec1);
+
+  const sec2 = document.createElement('div');
+  sec2.style.cssText = 'margin-bottom:16px;';
+  const sec2Title = document.createElement('div');
+  sec2Title.textContent = '날짜 직접 고르기';
+  sec2Title.style.cssText = 'font-size:12px; font-weight:600; color:#444; margin-bottom:6px;';
+  sec2.appendChild(sec2Title);
+  const dateRow = document.createElement('div');
+  dateRow.style.cssText = 'display:flex; gap:6px; align-items:center;';
+  const dateInput = document.createElement('input');
+  dateInput.type = 'date';
+  dateInput.className = 'modal-input';
+  dateInput.style.flex = '1';
+  const addDateBtn = document.createElement('button');
+  addDateBtn.textContent = '추가';
+  addDateBtn.style.cssText = 'font-size:12px; padding:8px 14px; height:auto; flex-shrink:0;';
+  dateRow.appendChild(dateInput); dateRow.appendChild(addDateBtn);
+  sec2.appendChild(dateRow);
+  const chips = document.createElement('div');
+  chips.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;';
+  sec2.appendChild(chips);
+  box.appendChild(sec2);
+
+  const extra = [];
+  function renderChips(){
+    chips.innerHTML = '';
+    extra.forEach(lbl => {
+      const c = document.createElement('span');
+      c.style.cssText = 'display:inline-flex; align-items:center; gap:4px; font-size:12px; background:#eef2ff; border:1px solid #c7d2fe; color:#3730a3; border-radius:20px; padding:3px 6px 3px 10px;';
+      c.textContent = formatDateShort(lbl);
+      const x = document.createElement('button');
+      x.textContent = '✕';
+      x.style.cssText = 'font-size:10px; padding:0 4px; height:auto; border:none; background:transparent; color:#3730a3; cursor:pointer;';
+      x.onclick = () => {
+        const i = extra.indexOf(lbl);
+        if(i > -1) extra.splice(i,1);
+        delete picked[lbl];
+        renderChips(); updateBtn();
+      };
+      c.appendChild(x);
+      chips.appendChild(c);
+    });
+  }
+  addDateBtn.onclick = () => {
+    if(!dateInput.value) return;
+    const lbl = formatDateLabel(fromISODate(dateInput.value));
+    if(lbl === currentDateLabel){ alert('지금 있는 날짜예요.'); return; }
+    if(!picked[lbl]){ picked[lbl] = true; if(extra.indexOf(lbl) === -1) extra.push(lbl); }
+    dateInput.value = '';
+    renderChips(); updateBtn();
+  };
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex; gap:8px; justify-content:flex-end; margin-top:4px;';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = '취소';
+  cancelBtn.onclick = () => { if(backdrop.parentNode) document.body.removeChild(backdrop); };
+  const okBtn = document.createElement('button');
+  okBtn.style.cssText = 'background:#2563eb; color:#fff; border-color:#2563eb;';
+  function updateBtn(){
+    const n = Object.keys(picked).length;
+    okBtn.textContent = n > 0 ? (n + '개 날짜에 복제') : '복제할 날짜를 고르세요';
+    okBtn.disabled = (n === 0);
+    okBtn.style.opacity = n === 0 ? '0.5' : '1';
+  }
+  okBtn.onclick = () => {
+    const targets = Object.keys(picked);
+    if(targets.length === 0) return;
+    duplicateTaskToDates(task, projName, targets);
+    if(backdrop.parentNode) document.body.removeChild(backdrop);
+  };
+  actions.appendChild(cancelBtn);
+  actions.appendChild(okBtn);
+  box.appendChild(actions);
+  updateBtn();
+
+  backdrop.appendChild(box);
+  backdrop.addEventListener('mousedown', (e) => { if(e.target === backdrop) document.body.removeChild(backdrop); });
+  document.body.appendChild(backdrop);
+}
+
 function openEventModal(dateGroup, proj, editingTask){
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
@@ -2812,7 +3046,7 @@ function openShowDateManager(initialProjName){
       addBtn.textContent = '+ 날짜 추가';
       addBtn.style.cssText = 'font-size:11px; padding:4px 9px; height:auto;';
       addBtn.onclick = () => {
-        dateLists[bt.id].push({ date: '', label: '' });
+        dateLists[bt.id].push({ date: '', label: '', time: '' });
         renderDateArea();
       };
       head.appendChild(addBtn);
@@ -2841,6 +3075,15 @@ function openShowDateManager(initialProjName){
           renderPreview();
         };
         row.appendChild(dInp);
+
+        const tInp = document.createElement('input');
+        tInp.type = 'time';
+        tInp.className = 'modal-input';
+        tInp.title = '시간 (비워 두면 하루 종일)';
+        tInp.style.cssText = 'flex:0 0 110px; min-width:95px;';
+        tInp.value = item.time || '';
+        tInp.onchange = () => { item.time = tInp.value; renderPreview(); };
+        row.appendChild(tInp);
 
         const nInp = document.createElement('input');
         nInp.type = 'text';
@@ -2890,6 +3133,7 @@ function openShowDateManager(initialProjName){
           baseId: bt.id,
           category: bt.id === 'show' ? '공연일' : (bt.id === 'open' ? '티켓오픈' : '오픈공지'),
           text: text,
+          time: (item.time || '').trim(),
           date: fromISODate(item.date),
           iso: item.date
         });
@@ -3041,7 +3285,7 @@ function openShowDateManager(initialProjName){
       if(d){
         const isPast = d < today;
         dateCell.style.cssText = 'flex:0 0 96px; color:' + (isPast ? '#bbb' : '#444') + ';';
-        dateCell.textContent = formatDateShort(d);
+        dateCell.textContent = formatDateShort(d) + (isDateEvent && entry.ev.time ? ' ' + entry.ev.time : '');
       } else {
         dateCell.style.cssText = 'flex:0 0 96px; color:#c08a2a; font-size:11px;';
         dateCell.textContent = '오픈일 필요';
@@ -3166,14 +3410,14 @@ function openShowDateManager(initialProjName){
         project: name,
         text: entry.ev ? entry.ev.text : tpl.name,
         assignee: '',
-        deadline: '',
+        deadline: entry.ev ? (entry.ev.time || '') : '',
         done: false,
         details: '',
         owner: ownerVal,
         category: entry.ev ? entry.ev.category : (isEvent ? (tpl.category || '기타') : ''),
         endDate: isEvent ? dateLabel : '',
         endTime: '',
-        allDay: isEvent ? true : false,
+        allDay: (entry.ev && entry.ev.time) ? false : (isEvent ? true : false),
         tag: entry.ev ? '' : (tpl.tag || '')
       };
       let targetGroup = data.find(g => g.date === dateLabel);
@@ -4529,6 +4773,12 @@ function renderLeft(){
         });
       };
 
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'del-btn';
+      copyBtn.textContent = '⧉';
+      copyBtn.title = '다른 날짜로 복제 (원본은 그대로)';
+      copyBtn.onclick = () => { openDuplicateTaskModal(task, proj.name, dateGroup.date); };
+
       const moveBtn = document.createElement('button');
       moveBtn.className = 'del-btn';
       moveBtn.textContent = '→';
@@ -4626,6 +4876,7 @@ function renderLeft(){
       row.appendChild(check);
       row.appendChild(textInput);
       row.appendChild(tagBtn);
+      row.appendChild(copyBtn);
       row.appendChild(moveBtn);
       row.appendChild(delBtn);
       row.appendChild(detailsInput);
