@@ -296,7 +296,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-10-20a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-10-20b';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -715,6 +715,212 @@ async function apiSetSettings(body){
   });
   return await res.json();
 }
+
+/* ═══════════ 저장 안전장치 ═══════════
+   적어 둔 내용이 사라지지 않도록:
+   1) 아직 서버에 만들어지지 않은 할 일(temp id)에는 저장 요청을 보내지 않고 기다림
+   2) 저장이 실패하면 성공할 때까지 계속 다시 시도
+   3) 타이핑 중에도 0.7초마다 자동 저장 (blur 안 나도 남음)
+   4) 저장 안 된 내용은 브라우저에 따로 백업 → 다음에 열 때 복구
+   5) 저장 안 끝났는데 창을 닫으려 하면 경고                                   */
+
+const UNSAVED_KEY = 'unsavedTaskEdits_v1';
+const saveQueue = [];
+let saveTimer = null;
+let pendingAddCount = 0;
+
+function isTempId(id){ return !id || String(id).indexOf('temp_') === 0; }
+
+function queueTaskSave(task, fields){
+  if(!task) return;
+  const found = saveQueue.find(x => x.task === task);
+  if(found){ Object.assign(found.fields, fields); found.tries = 0; }
+  else saveQueue.push({ task: task, fields: Object.assign({}, fields), tries: 0 });
+  backupUnsavedEdits();
+  updateSaveIndicator();
+  scheduleFlush(0);
+}
+
+function scheduleFlush(delay){
+  if(saveTimer) return;
+  saveTimer = setTimeout(() => { saveTimer = null; flushSaveQueue(); }, delay);
+}
+
+async function flushSaveQueue(){
+  if(saveQueue.length === 0){ updateSaveIndicator(); return; }
+  const item = saveQueue[0];
+  // 서버에 아직 만들어지지 않았으면 id가 생길 때까지 기다렸다가 보냄
+  if(isTempId(item.task.id)){
+    scheduleFlush(400);
+    return;
+  }
+  try {
+    const r = await apiUpdate(Object.assign({ id: item.task.id }, item.fields));
+    if(r && r.error) throw new Error(r.error);
+    saveQueue.shift();
+    backupUnsavedEdits();
+    updateSaveIndicator();
+    scheduleFlush(0);
+  } catch(e){
+    item.tries++;
+    updateSaveIndicator();
+    scheduleFlush(Math.min(20000, 1000 * item.tries));   // 포기하지 않고 계속 재시도
+  }
+}
+
+function updateSaveIndicator(){
+  const n = saveQueue.length + pendingAddCount;
+  if(n === 0){ setStatus('동기화됨'); return; }
+  const failing = saveQueue.some(x => x.tries >= 2);
+  setStatus(failing ? ('⚠ 저장 재시도 중 ' + n + '건 - 창을 닫지 마세요') : ('저장 중... ' + n + '건'));
+}
+
+function backupUnsavedEdits(){
+  try {
+    const arr = saveQueue.map(x => ({
+      id: x.task.id, date: x.task.date, project: x.task.project,
+      text: x.task.text || '', details: x.task.details || '',
+      owner: x.task.owner || '', tag: x.task.tag || '',
+      fields: Object.keys(x.fields)
+    }));
+    if(arr.length) localStorage.setItem(UNSAVED_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(UNSAVED_KEY);
+  } catch(e){ /* 저장소를 못 써도 앱은 계속 동작 */ }
+}
+
+/* 새 할 일을 서버에 만들 때도 성공할 때까지 다시 시도 */
+function createTaskOnServer(task, body){
+  pendingAddCount++;
+  updateSaveIndicator();
+  const attempt = (n) => apiAdd(body).then(r => {
+    if(!r || !r.id) throw new Error('no id');
+    task.id = r.id;
+    pendingAddCount--;
+    updateSaveIndicator();
+  }).catch(() => new Promise(res => setTimeout(res, Math.min(20000, 1000 * (n+1))))
+      .then(() => attempt(n+1)));
+  return attempt(0);
+}
+
+/* 삭제도 안전하게: 아직 서버에 안 만들어졌으면 id가 생길 때까지 기다렸다 지움 */
+function deleteTaskSafely(task){
+  for(let i = saveQueue.length - 1; i >= 0; i--){
+    if(saveQueue[i].task === task) saveQueue.splice(i, 1);
+  }
+  backupUnsavedEdits();
+  updateSaveIndicator();
+  const tryDelete = (n) => {
+    if(isTempId(task.id)){
+      if(n > 60) return;                       // 끝내 못 만들어졌으면 지울 것도 없음
+      setTimeout(() => tryDelete(n + 1), 500);
+      return;
+    }
+    apiDelete(task.id).catch(() => {
+      if(n > 10) return;
+      setTimeout(() => tryDelete(n + 1), Math.min(10000, 1000 * (n + 1)));
+    });
+  };
+  tryDelete(0);
+}
+
+function findTaskById(id){
+  if(!id) return null;
+  for(const g of data){
+    for(const p of g.projects){
+      for(const t of p.tasks){ if(t.id === id) return t; }
+    }
+  }
+  return null;
+}
+
+/* 지난번에 저장 못 하고 닫힌 내용이 있으면 되살림 */
+function recoverUnsavedEdits(){
+  let arr = null;
+  try { arr = JSON.parse(localStorage.getItem(UNSAVED_KEY) || 'null'); } catch(e){ arr = null; }
+  if(!Array.isArray(arr) || arr.length === 0) return;
+  const lost = [];
+  let restored = 0;
+  arr.forEach(b => {
+    const t = findTaskById(b.id);
+    if(t){
+      const fields = {};
+      if(b.fields.indexOf('text') !== -1 && (t.text || '') !== (b.text || '')){ t.text = b.text; fields.text = b.text; }
+      if(b.fields.indexOf('details') !== -1 && (t.details || '') !== (b.details || '')){ t.details = b.details; fields.details = b.details; }
+      if(Object.keys(fields).length){ queueTaskSave(t, fields); restored++; }
+    } else if((b.text || '').trim() || (b.details || '').trim()){
+      lost.push(b);
+    }
+  });
+  try { localStorage.removeItem(UNSAVED_KEY); } catch(e){}
+  if(restored > 0) renderAll();
+  if(lost.length > 0) showRecoveryBox(lost);
+}
+
+function showRecoveryBox(lost){
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const box = document.createElement('div');
+  box.className = 'modal-box';
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = '저장되지 않은 내용이 있어요';
+  box.appendChild(title);
+  const p = document.createElement('div');
+  p.style.cssText = 'font-size:13px; color:#555; line-height:1.7; margin-bottom:14px;';
+  p.textContent = '지난번에 적으셨는데 저장이 끝나기 전에 창이 닫힌 것 같아요. 아래 내용을 다시 넣을까요?';
+  box.appendChild(p);
+  const listBox = document.createElement('div');
+  listBox.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden; margin-bottom:16px; max-height:260px; overflow-y:auto;';
+  lost.forEach((b, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'padding:9px 12px; font-size:12px; line-height:1.6;' + (i % 2 ? 'background:#faf9f6;' : 'background:#fff;');
+    row.innerHTML = '<div style="color:#888;">' + escapeHtml(b.date || '') + ' · ' + escapeHtml(b.project || '') + '</div>' +
+      '<div style="font-weight:600; word-break:break-all;">' + escapeHtml(b.text || '(제목 없음)') + '</div>' +
+      (b.details ? '<div style="color:#666; white-space:pre-wrap; word-break:break-all;">' + escapeHtml(b.details) + '</div>' : '');
+    listBox.appendChild(row);
+  });
+  box.appendChild(listBox);
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex; gap:8px; justify-content:flex-end;';
+  const skip = document.createElement('button');
+  skip.textContent = '아니요';
+  skip.onclick = () => { if(backdrop.parentNode) document.body.removeChild(backdrop); };
+  const ok = document.createElement('button');
+  ok.className = 'primary';
+  ok.textContent = '다시 넣기';
+  ok.onclick = () => {
+    lost.forEach(b => {
+      const dateLabel = b.date || formatDateLabel(new Date());
+      const projName = b.project || '';
+      if(!projName) return;
+      let g = data.find(x => x.date === dateLabel);
+      if(!g){ g = { date: dateLabel, projects: [] }; data.push(g); }
+      let pr = g.projects.find(x => x.name === projName);
+      if(!pr){ pr = { name: projName, tasks: [] }; g.projects.push(pr); }
+      const body = { date: dateLabel, project: projName, text: b.text || '', assignee: '', deadline: '',
+        done: false, details: b.details || '', owner: b.owner || '', category: '', endDate: '', endTime: '', allDay: false, tag: b.tag || '' };
+      const t = Object.assign({ id: 'temp_' + Date.now() + '_' + Math.floor(Math.random()*1000) }, body);
+      pr.tasks.push(t);
+      createTaskOnServer(t, body);
+    });
+    sortDataByDate();
+    renderAll();
+    if(backdrop.parentNode) document.body.removeChild(backdrop);
+  };
+  actions.appendChild(skip);
+  actions.appendChild(ok);
+  box.appendChild(actions);
+  backdrop.appendChild(box);
+  document.body.appendChild(backdrop);
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if(saveQueue.length > 0 || pendingAddCount > 0){
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
 
 function dateSortKey(str){
   const m = String(str).match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
@@ -4650,11 +4856,7 @@ function renderLeft(){
       const newTask = { id: tempId, date: dateGroup.date, project: proj.name, text: '', assignee: '', deadline: '', done: false, details: '', owner: owner };
       proj.tasks.push(newTask);
       renderAll();
-      setStatus('저장 중...');
-      apiAdd({ date: dateGroup.date, project: proj.name, text: '', assignee: '', deadline: '', done: false, details: '', owner: owner }).then(r => {
-        newTask.id = r.id;
-        setStatus('동기화됨');
-      });
+      createTaskOnServer(newTask, { date: dateGroup.date, project: proj.name, text: '', assignee: '', deadline: '', done: false, details: '', owner: owner });
     };
     const delProjBtn = document.createElement('button');
     delProjBtn.textContent = '삭제';
@@ -4710,10 +4912,10 @@ function renderLeft(){
         const evDelBtn = document.createElement('button');
         evDelBtn.textContent = '✕';
         evDelBtn.style.cssText = 'font-size:11px; padding:3px 7px; height:auto; flex-shrink:0;' + (isAllDay ? ' background:rgba(255,255,255,0.85);' : '');
-        evDelBtn.onclick = async () => {
+        evDelBtn.onclick = () => {
           proj.tasks.splice(ti,1);
           renderAll();
-          await apiDelete(task.id);
+          deleteTaskSafely(task);
         };
         evRow.appendChild(evDelBtn);
         projWrap.appendChild(evRow);
@@ -4734,7 +4936,7 @@ function renderLeft(){
         renderTabs();
         renderProgress();
         updateWeeklyTaskLine(task);
-        await apiUpdate({ id: task.id, done: task.done });
+        queueTaskSave(task, { done: task.done });
       };
 
       const textInput = document.createElement('input');
@@ -4742,8 +4944,18 @@ function renderLeft(){
       textInput.value = task.text;
       textInput.placeholder = '할 일 내용';
       textInput.className = 'task-text' + (task.done ? ' done' : '');
-      textInput.oninput = () => { task.text = textInput.value; };
-      textInput.onblur = async () => { renderAll(); await apiUpdate({ id: task.id, text: task.text }); };
+      let textSaveTimer = null;
+      textInput.oninput = () => {
+        task.text = textInput.value;
+        // 타이핑 중에도 자동 저장 — 창이 갑자기 닫혀도 남도록
+        clearTimeout(textSaveTimer);
+        textSaveTimer = setTimeout(() => { queueTaskSave(task, { text: task.text }); }, 700);
+      };
+      textInput.onblur = () => {
+        clearTimeout(textSaveTimer);
+        queueTaskSave(task, { text: task.text });
+        renderAll();
+      };
 
       const detailsInput = document.createElement('textarea');
       detailsInput.className = 'task-details';
@@ -4755,8 +4967,17 @@ function renderLeft(){
         detailsInput.style.height = 'auto';
         detailsInput.style.height = Math.max(36, detailsInput.scrollHeight) + 'px';
       };
-      detailsInput.oninput = () => { task.details = detailsInput.value; autoGrowDetails(); };
-      detailsInput.onblur = async () => { await apiUpdate({ id: task.id, details: task.details }); };
+      let detailsSaveTimer = null;
+      detailsInput.oninput = () => {
+        task.details = detailsInput.value;
+        autoGrowDetails();
+        clearTimeout(detailsSaveTimer);
+        detailsSaveTimer = setTimeout(() => { queueTaskSave(task, { details: task.details }); }, 700);
+      };
+      detailsInput.onblur = () => {
+        clearTimeout(detailsSaveTimer);
+        queueTaskSave(task, { details: task.details });
+      };
       requestAnimationFrame(autoGrowDetails);
 
       const tagBtn = document.createElement('button');
@@ -4769,7 +4990,7 @@ function renderLeft(){
         openTaskTagPicker(tagBtn, task.tag || '', (newTag) => {
           task.tag = newTag;
           renderAll();
-          apiUpdate({ id: task.id, tag: newTag });
+          queueTaskSave(task, { tag: newTag });
         });
       };
 
@@ -4838,8 +5059,7 @@ function renderLeft(){
 
               sortDataByDate();
               renderAll();
-              setStatus('이동 중...');
-              apiUpdate({ id: task.id, date: newDate }).then(() => setStatus('동기화됨'));
+              queueTaskSave(task, { date: newDate });
             }
           }
           cleanup();
@@ -4867,10 +5087,10 @@ function renderLeft(){
       const delBtn = document.createElement('button');
       delBtn.className = 'del-btn';
       delBtn.textContent = '✕';
-      delBtn.onclick = async () => {
+      delBtn.onclick = () => {
         proj.tasks.splice(ti,1);
         renderAll();
-        await apiDelete(task.id);
+        deleteTaskSafely(task);
       };
 
       row.appendChild(check);
@@ -5522,7 +5742,7 @@ let lastKnownTodayLabel = '';
 function startApp(){
   lastKnownTodayLabel = formatDateLabel(new Date());
   initStickyNote();
-  loadData();
+  loadData().then(() => { try { recoverUnsavedEdits(); } catch(e){} });
   setInterval(() => {
     const nowLabel = formatDateLabel(new Date());
     if(nowLabel !== lastKnownTodayLabel){
