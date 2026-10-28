@@ -260,6 +260,7 @@
       <button id="projHistBtn" title="콘서트를 골라서 완료/미완료 업무를 한 번에 보기">📋 콘서트별 업무 현황</button>
       <button id="rolloverBtn" title="어제 미완료 할 일을 오늘로 옮기기">어제 미완료 가져오기</button>
       <button id="stickyNoteToggleBtn">메모</button>
+      <button id="trashBtn" title="지운 할 일 되살리기">🗑 휴지통</button>
       <button id="ownerBtn">내 이름 설정</button>
       <button id="manageOwnersBtn">담당자 관리</button>
       <button id="viewFilterBtn">전체보기</button>
@@ -296,7 +297,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-10-20b';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-10-28a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -343,6 +344,7 @@ const CONFIG_PROJECT = '__CONFIG__';
 let taskTemplates = [];
 let showDates = {};
 let projectOwners = {};   // 콘서트명 → 담당자 (할 일이 없어도 유지됨)
+let taskTrash = [];       // 지운 할 일 보관함 (되살릴 수 있게)
 const configRowIds = {};
 
 // base: 'show' = 공연일 기준, 'open' = 티켓오픈일 기준
@@ -381,6 +383,7 @@ function extractConfigRows(flatTasks){
     if(t.text === 'taskTemplates' && Array.isArray(parsed)) taskTemplates = migrateTemplates(parsed);
     if(t.text === 'showDates' && parsed && typeof parsed === 'object') showDates = parsed;
     if(t.text === 'projectOwners' && parsed && typeof parsed === 'object') projectOwners = parsed;
+    if(t.text === 'taskTrash' && Array.isArray(parsed)) taskTrash = parsed;
   });
   if(taskTemplates.length === 0){
     taskTemplates = [{ id: newTemplateId(), name: '기본', items: DEFAULT_TASK_TEMPLATES.map(t => Object.assign({}, t)) }];
@@ -731,8 +734,28 @@ let pendingAddCount = 0;
 
 function isTempId(id){ return !id || String(id).indexOf('temp_') === 0; }
 
+function taskHasContent(task){
+  return !!((task.text || '').trim() || (task.details || '').trim() || task.category);
+}
+
+function fullTaskBody(task){
+  return {
+    date: task.date || '', project: task.project || '', text: task.text || '',
+    assignee: task.assignee || '', deadline: task.deadline || '', done: !!task.done,
+    details: task.details || '', owner: task.owner || '', category: task.category || '',
+    endDate: task.endDate || '', endTime: task.endTime || '', allDay: !!task.allDay, tag: task.tag || ''
+  };
+}
+
 function queueTaskSave(task, fields){
   if(!task) return;
+  // 아직 시트에 줄이 없는 할 일: 내용이 생긴 순간에 만들고, 비어 있으면 아무것도 하지 않음
+  if(task._notCreated){
+    if(!taskHasContent(task)) return;
+    task._notCreated = false;
+    createTaskOnServer(task, fullTaskBody(task));
+    return;
+  }
   const found = saveQueue.find(x => x.task === task);
   if(found){ Object.assign(found.fields, fields); found.tries = 0; }
   else saveQueue.push({ task: task, fields: Object.assign({}, fields), tries: 0 });
@@ -756,6 +779,18 @@ async function flushSaveQueue(){
   }
   try {
     const r = await apiUpdate(Object.assign({ id: item.task.id }, item.fields));
+    if(r && r.error === 'not found'){
+      // 시트에서 그 줄이 사라졌음 → 내용이 있으면 잃지 않도록 다시 만들어 줌
+      saveQueue.shift();
+      if(taskHasContent(item.task)){
+        item.task._notCreated = false;
+        createTaskOnServer(item.task, fullTaskBody(item.task));
+      }
+      backupUnsavedEdits();
+      updateSaveIndicator();
+      scheduleFlush(0);
+      return;
+    }
     if(r && r.error) throw new Error(r.error);
     saveQueue.shift();
     backupUnsavedEdits();
@@ -802,6 +837,181 @@ function createTaskOnServer(task, body){
   return attempt(0);
 }
 
+/* ═══════════ 휴지통 ═══════════
+   지운 할 일을 바로 없애지 않고 보관함에 담아 둠. 14일 또는 200건까지.
+   보관함은 시트의 설정 줄(__CONFIG__)에 들어가서 구글 시트 재배포가 필요 없음. */
+const TRASH_KEEP_DAYS = 14;
+const TRASH_MAX = 200;
+
+function pruneTrash(){
+  const cutoff = Date.now() - TRASH_KEEP_DAYS * 86400000;
+  taskTrash = taskTrash.filter(x => !x.deletedAt || x.deletedAt >= cutoff);
+  if(taskTrash.length > TRASH_MAX) taskTrash = taskTrash.slice(taskTrash.length - TRASH_MAX);
+}
+
+function saveTaskTrash(){
+  pruneTrash();
+  return saveConfigRow('taskTrash', taskTrash);
+}
+
+function trashEntryFrom(task){
+  return {
+    tid: 'tr' + Date.now() + '_' + Math.floor(Math.random() * 10000),
+    deletedAt: Date.now(),
+    deletedBy: currentOwner || '',
+    date: task.date || '', project: task.project || '', text: task.text || '',
+    assignee: task.assignee || '', deadline: task.deadline || '', done: !!task.done,
+    details: task.details || '', owner: task.owner || '', category: task.category || '',
+    endDate: task.endDate || '', endTime: task.endTime || '', allDay: !!task.allDay, tag: task.tag || ''
+  };
+}
+
+/* 할 일 여러 개를 한 번에 휴지통으로 */
+function trashTasks(tasks){
+  const arr = (tasks || []).filter(Boolean);
+  if(arr.length === 0) return;
+  arr.forEach(t => {
+    // 아무것도 안 적힌 빈 줄은 보관할 필요 없음
+    const empty = !(t.text || '').trim() && !(t.details || '').trim();
+    if(!empty) taskTrash.push(trashEntryFrom(t));
+    deleteTaskSafely(t);
+  });
+  saveTaskTrash();
+  updateTrashButton();
+}
+
+function updateTrashButton(){
+  const btn = document.getElementById('trashBtn');
+  if(!btn) return;
+  pruneTrash();
+  btn.textContent = taskTrash.length > 0 ? ('🗑 휴지통 ' + taskTrash.length) : '🗑 휴지통';
+}
+
+function restoreTrashEntry(entry){
+  const dateLabel = entry.date || formatDateLabel(new Date());
+  const projName = entry.project || '';
+  if(!projName){ alert('어느 콘서트 것인지 알 수 없어서 되살릴 수 없어요.'); return; }
+  if(projectNameOrder.indexOf(projName) === -1){
+    projectNameOrder.push(projName);
+    saveProjectNameOrder();
+  }
+  let g = data.find(x => x.date === dateLabel);
+  if(!g){ g = { date: dateLabel, projects: [] }; data.push(g); }
+  let pr = g.projects.find(x => x.name === projName);
+  if(!pr){ pr = { name: projName, tasks: [] }; g.projects.push(pr); }
+  const body = {
+    date: dateLabel, project: projName, text: entry.text || '', assignee: entry.assignee || '',
+    deadline: entry.deadline || '', done: !!entry.done, details: entry.details || '',
+    owner: entry.owner || '', category: entry.category || '', endDate: entry.endDate || '',
+    endTime: entry.endTime || '', allDay: !!entry.allDay, tag: entry.tag || ''
+  };
+  const t = Object.assign({ id: 'temp_' + Date.now() + '_' + Math.floor(Math.random()*1000) }, body);
+  pr.tasks.push(t);
+  createTaskOnServer(t, body);
+  taskTrash = taskTrash.filter(x => x.tid !== entry.tid);
+  saveTaskTrash();
+  sortDataByDate();
+  renderAll();
+  updateTrashButton();
+}
+
+function openTrashModal(){
+  pruneTrash();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const box = document.createElement('div');
+  box.className = 'modal-box';
+  box.style.width = '560px';
+
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = '휴지통';
+  box.appendChild(title);
+
+  const note = document.createElement('div');
+  note.style.cssText = 'font-size:12px; color:#888; margin-bottom:12px; line-height:1.6;';
+  note.textContent = '지운 할 일은 ' + TRASH_KEEP_DAYS + '일 동안 여기 보관돼요. 되살리면 원래 날짜·콘서트로 돌아가요.';
+  box.appendChild(note);
+
+  const listWrap = document.createElement('div');
+  box.appendChild(listWrap);
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex; gap:8px; justify-content:space-between; align-items:center; margin-top:16px;';
+  const emptyBtn = document.createElement('button');
+  emptyBtn.textContent = '휴지통 비우기';
+  emptyBtn.style.cssText = 'font-size:12px; padding:7px 12px; height:auto; color:#c0392b;';
+  emptyBtn.onclick = () => {
+    if(taskTrash.length === 0) return;
+    if(!confirm('휴지통의 ' + taskTrash.length + '건을 완전히 지울까요?\n되돌릴 수 없어요.')) return;
+    taskTrash = [];
+    saveTaskTrash();
+    updateTrashButton();
+    render();
+  };
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '닫기';
+  closeBtn.onclick = () => { if(backdrop.parentNode) document.body.removeChild(backdrop); };
+  actions.appendChild(emptyBtn);
+  actions.appendChild(closeBtn);
+  box.appendChild(actions);
+
+  function render(){
+    listWrap.innerHTML = '';
+    if(taskTrash.length === 0){
+      const p = document.createElement('div');
+      p.style.cssText = 'font-size:13px; color:#999; padding:18px 0; text-align:center;';
+      p.textContent = '휴지통이 비어 있어요.';
+      listWrap.appendChild(p);
+      emptyBtn.style.display = 'none';
+      return;
+    }
+    emptyBtn.style.display = '';
+    const table = document.createElement('div');
+    table.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden; max-height:380px; overflow-y:auto;';
+    taskTrash.slice().reverse().forEach((e, i) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:9px 12px; font-size:12px;' +
+        (i % 2 ? 'background:#faf9f6;' : 'background:#fff;');
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1 1 auto; min-width:0; line-height:1.6;';
+      const when = e.deletedAt ? new Date(e.deletedAt) : null;
+      const whenTxt = when ? (formatDateShort(when) + ' ' + String(when.getHours()).padStart(2,'0') + ':' + String(when.getMinutes()).padStart(2,'0')) : '';
+      info.innerHTML =
+        '<div style="color:#888;">' + escapeHtml(e.date || '') + ' · <span style="color:' + colorFor(e.project || '') + ';">' + escapeHtml(e.project || '') + '</span>' +
+        (e.category ? ' · ' + escapeHtml(e.category) : '') + '</div>' +
+        '<div style="font-weight:600; word-break:break-all;">' + escapeHtml(e.text || '(제목 없음)') + '</div>' +
+        (e.details ? '<div style="color:#666; white-space:pre-wrap; word-break:break-all;">' + escapeHtml(e.details) + '</div>' : '') +
+        '<div style="color:#bbb; font-size:11px;">지운 날 ' + escapeHtml(whenTxt) + (e.deletedBy ? ' · ' + escapeHtml(e.deletedBy) : '') + '</div>';
+      row.appendChild(info);
+      const restore = document.createElement('button');
+      restore.textContent = '되살리기';
+      restore.style.cssText = 'font-size:11px; padding:5px 10px; height:auto; flex-shrink:0;';
+      restore.onclick = () => { restoreTrashEntry(e); render(); };
+      row.appendChild(restore);
+      const hard = document.createElement('button');
+      hard.textContent = '✕';
+      hard.title = '완전히 지우기';
+      hard.style.cssText = 'font-size:11px; padding:5px 8px; height:auto; flex-shrink:0; color:#c0392b;';
+      hard.onclick = () => {
+        if(!confirm('이 항목을 완전히 지울까요? 되돌릴 수 없어요.')) return;
+        taskTrash = taskTrash.filter(x => x.tid !== e.tid);
+        saveTaskTrash();
+        updateTrashButton();
+        render();
+      };
+      row.appendChild(hard);
+      table.appendChild(row);
+    });
+    listWrap.appendChild(table);
+  }
+  render();
+
+  backdrop.appendChild(box);
+  backdrop.addEventListener('mousedown', (ev) => { if(ev.target === backdrop) document.body.removeChild(backdrop); });
+  document.body.appendChild(backdrop);
+}
+
 /* 삭제도 안전하게: 아직 서버에 안 만들어졌으면 id가 생길 때까지 기다렸다 지움 */
 function deleteTaskSafely(task){
   for(let i = saveQueue.length - 1; i >= 0; i--){
@@ -809,6 +1019,7 @@ function deleteTaskSafely(task){
   }
   backupUnsavedEdits();
   updateSaveIndicator();
+  if(task._notCreated) return;   // 시트에 아직 없는 줄은 지울 것도 없음
   const tryDelete = (n) => {
     if(isTempId(task.id)){
       if(n > 60) return;                       // 끝내 못 만들어졌으면 지울 것도 없음
@@ -831,6 +1042,55 @@ function findTaskById(id){
     }
   }
   return null;
+}
+
+/* ═══════════ 내용 스냅샷 (최후의 안전장치) ═══════════
+   화면에 보이는 모든 할 일의 내용을 주기적으로 브라우저에 그대로 복사해 둠.
+   다음에 열었을 때 시트 쪽 내용이 비어 있는데 스냅샷에는 글이 있으면,
+   어떤 이유로 사라졌든 자동으로 되돌려 놓고 다시 저장함. */
+const SNAPSHOT_KEY = 'boardSnapshot_v1';
+
+function collectSnapshot(){
+  const out = [];
+  data.forEach(g => g.projects.forEach(p => p.tasks.forEach(t => {
+    if(t._notCreated) return;
+    if(!(t.text || '').trim() && !(t.details || '').trim()) return;
+    out.push({ id: t.id, date: t.date || '', project: t.project || p.name,
+               text: t.text || '', details: t.details || '' });
+  })));
+  return out;
+}
+
+function saveSnapshot(){
+  try {
+    const arr = collectSnapshot();
+    if(arr.length) localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ at: Date.now(), tasks: arr }));
+  } catch(e){ /* 저장소를 못 써도 앱은 계속 동작 */ }
+}
+
+/* 시트에서 내용이 비어 돌아온 할 일을 스냅샷으로 되돌림 */
+function restoreFromSnapshot(){
+  let snap = null;
+  try { snap = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || 'null'); } catch(e){ snap = null; }
+  if(!snap || !Array.isArray(snap.tasks) || snap.tasks.length === 0) return 0;
+  const byId = {};
+  snap.tasks.forEach(x => { if(x && x.id) byId[x.id] = x; });
+  let fixed = 0;
+  data.forEach(g => g.projects.forEach(p => p.tasks.forEach(t => {
+    const b = byId[t.id];
+    if(!b) return;
+    const fields = {};
+    if(!(t.text || '').trim() && (b.text || '').trim()){ t.text = b.text; fields.text = b.text; }
+    if(!(t.details || '').trim() && (b.details || '').trim()){ t.details = b.details; fields.details = b.details; }
+    if(Object.keys(fields).length){ queueTaskSave(t, fields); fixed++; }
+  })));
+  if(fixed > 0){
+    renderAll();
+    setTimeout(() => {
+      alert('내용이 비어 있던 할 일 ' + fixed + '건을 이 컴퓨터에 남아 있던 기록으로 되돌렸어요.');
+    }, 400);
+  }
+  return fixed;
 }
 
 /* 지난번에 저장 못 하고 닫힌 내용이 있으면 되살림 */
@@ -915,6 +1175,7 @@ function showRecoveryBox(lost){
 }
 
 window.addEventListener('beforeunload', (e) => {
+  try { saveSnapshot(); } catch(err){}
   if(saveQueue.length > 0 || pendingAddCount > 0){
     e.preventDefault();
     e.returnValue = '';
@@ -4852,21 +5113,20 @@ function renderLeft(){
     addTaskBtn.textContent = '+ 할 일';
     addTaskBtn.onclick = () => {
       const owner = getProjOwner(proj);
-      const tempId = 'temp_' + Date.now();
-      const newTask = { id: tempId, date: dateGroup.date, project: proj.name, text: '', assignee: '', deadline: '', done: false, details: '', owner: owner };
+      const tempId = 'temp_' + Date.now() + '_' + Math.floor(Math.random()*1000);
+      // 내용이 생기기 전에는 시트에 줄을 만들지 않음 → "(내용 없음)" 줄이 생기지 않게
+      const newTask = { id: tempId, date: dateGroup.date, project: proj.name, text: '', assignee: '', deadline: '', done: false, details: '', owner: owner, _notCreated: true };
       proj.tasks.push(newTask);
       renderAll();
-      createTaskOnServer(newTask, { date: dateGroup.date, project: proj.name, text: '', assignee: '', deadline: '', done: false, details: '', owner: owner });
     };
     const delProjBtn = document.createElement('button');
     delProjBtn.textContent = '삭제';
     delProjBtn.onclick = () => {
-      const idsToDelete = proj.tasks.map(t => t.id);
+      const removed = proj.tasks.slice();
       const realIdx = dateGroup.projects.indexOf(proj);
       if(realIdx > -1) dateGroup.projects.splice(realIdx,1);
       renderAll();
-      setStatus('삭제 중...');
-      Promise.all(idsToDelete.map(id => apiDelete(id))).then(() => setStatus('동기화됨'));
+      trashTasks(removed);
     };
     btns.appendChild(addTaskBtn);
     btns.appendChild(delProjBtn);
@@ -4915,7 +5175,7 @@ function renderLeft(){
         evDelBtn.onclick = () => {
           proj.tasks.splice(ti,1);
           renderAll();
-          deleteTaskSafely(task);
+          trashTasks([task]);
         };
         evRow.appendChild(evDelBtn);
         projWrap.appendChild(evRow);
@@ -5090,7 +5350,7 @@ function renderLeft(){
       delBtn.onclick = () => {
         proj.tasks.splice(ti,1);
         renderAll();
-        deleteTaskSafely(task);
+        trashTasks([task]);
       };
 
       row.appendChild(check);
@@ -5742,7 +6002,15 @@ let lastKnownTodayLabel = '';
 function startApp(){
   lastKnownTodayLabel = formatDateLabel(new Date());
   initStickyNote();
-  loadData().then(() => { try { recoverUnsavedEdits(); } catch(e){} });
+  const tb = document.getElementById('trashBtn');
+  if(tb) tb.onclick = openTrashModal;
+  loadData().then(() => {
+    try { recoverUnsavedEdits(); } catch(e){}
+    try { restoreFromSnapshot(); } catch(e){}
+    try { updateTrashButton(); } catch(e){}
+    try { saveSnapshot(); } catch(e){}
+    setInterval(() => { try { saveSnapshot(); } catch(e){} }, 15000);
+  });
   setInterval(() => {
     const nowLabel = formatDateLabel(new Date());
     if(nowLabel !== lastKnownTodayLabel){
