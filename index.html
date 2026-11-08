@@ -138,6 +138,12 @@
   .board { display: block; }
   .left-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; font-size: 13px; color: #666; }
   .proj-grid { display: flex; gap: 16px; align-items: flex-start; overflow-x: auto; padding-bottom: 10px; }
+  @keyframes focusFlash {
+    0%   { background: #fff6cc; box-shadow: 0 0 0 3px #f5d76e; }
+    70%  { background: #fff6cc; box-shadow: 0 0 0 3px #f5d76e; }
+    100% { background: transparent; box-shadow: 0 0 0 3px transparent; }
+  }
+  .focus-flash { animation: focusFlash 1.8s ease-out; border-radius: 8px; }
   .proj-card { flex: 0 0 calc((100% - 32px) / 3); min-width: 280px; padding: 12px 14px; background: #fff; border: 1px solid #e3e1da; border-radius: 10px; }
   .proj-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
   .proj-name { font-size: 16px; font-weight: 700; }
@@ -297,7 +303,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-10-28a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-08a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -1603,6 +1609,42 @@ function isEventPast(task, day){
   return mins < nowMins;
 }
 
+/* 30분 간격 시간 고르기 드롭다운 (직접 숫자 입력 대신 목록에서 선택) */
+function makeTimeSelect(value, onChange){
+  const sel = document.createElement('select');
+  sel.className = 'modal-input';
+
+  const ph = document.createElement('option');
+  ph.value = '';
+  ph.textContent = '시간 선택';
+  sel.appendChild(ph);
+
+  const values = [];
+  for(let m = 0; m < 24 * 60; m += 30) values.push(m);
+
+  // 저장된 시간이 30분 단위가 아니면(예: 20:10) 그 값도 목록에 넣어 둠
+  const cur = timeToMinutes(value);
+  if(cur !== null && values.indexOf(cur) === -1){
+    values.push(cur);
+    values.sort((a, b) => a - b);
+  }
+
+  values.forEach(m => {
+    const hh = String(Math.floor(m / 60)).padStart(2, '0');
+    const mm = String(m % 60).padStart(2, '0');
+    const v = hh + ':' + mm;
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = formatDisplayTime(v);
+    if(cur !== null && m === cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  if(cur === null) ph.selected = true;
+
+  sel.onchange = () => { onChange(sel.value); };
+  return sel;
+}
+
 function formatDisplayTime(hhmm){
   const mins = timeToMinutes(hhmm);
   if(mins === null) return '';
@@ -1931,6 +1973,7 @@ function renderWeekly(){
           line.onclick = () => {
             selectedDate = day;
             ensureGroupForSelectedDate();
+            requestTaskFocus(proj.name, task.id);
             renderAll();
           };
           cell.appendChild(line);
@@ -2037,6 +2080,7 @@ function renderSearchResults(query){
     item.onclick = () => {
       selectedDate = parseDateLabel(r.date);
       ensureGroupForSelectedDate();
+      requestTaskFocus(r.proj, r.task.id);
       renderAll();
       box.style.display = 'none';
       document.getElementById('searchInput').value = '';
@@ -3360,7 +3404,8 @@ function openShowDateManager(initialProjName){
       row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:9px 12px; font-size:12px;' +
         (i % 2 ? 'background:#faf9f6;' : 'background:#fff;');
       const lists = getAllBaseDateLists(n);
-      const showD = fromISODate(getShowDate(n));
+      const showIso = getShowDate(n);
+      const showD = showIso ? fromISODate(showIso) : null;
       const showCnt = (lists.show || []).length;
       const extra = BASE_TYPES.filter(bt => bt.id !== 'show' && (lists[bt.id] || []).length > 0)
         .map(bt => {
@@ -3375,8 +3420,9 @@ function openShowDateManager(initialProjName){
         '<span style="flex:1 1 auto; font-weight:600; color:' + colorFor(n) + '; word-break:break-all;">' + escapeHtml(n) + '</span>' +
         (tplName ? '<span style="flex:0 0 auto; font-size:9px; padding:1px 6px; border-radius:20px; background:#eef2ff; border:1px solid #c9d4f5; color:#4a5fb5;">' + escapeHtml(tplName) + '</span>' : '') +
         ddayBadgeHtml(n, 10) +
-        '<span style="flex:0 0 230px; color:#666; text-align:right; line-height:1.5;">' + formatDateShort(showD) +
-          (showCnt > 1 ? ' <span style="color:#999;">외 ' + (showCnt-1) + '일</span>' : '') +
+        '<span style="flex:0 0 230px; color:#666; text-align:right; line-height:1.5;">' +
+          (showD ? (formatDateShort(showD) + (showCnt > 1 ? ' <span style="color:#999;">외 ' + (showCnt-1) + '일</span>' : ''))
+                 : '<span style="color:#bbb;">공연일 미입력</span>') +
           (extra ? '<br>' + extra : '') + '</span>' +
         '<span style="flex:0 0 112px; text-align:right; color:' + (cnt.overdue ? '#c0392b' : '#999') + ';">' +
           '미완료 ' + cnt.pending + '건' + (cnt.overdue ? ' · 지연 ' + cnt.overdue : '') + '</span>';
@@ -3543,13 +3589,9 @@ function openShowDateManager(initialProjName){
         };
         row.appendChild(dInp);
 
-        const tInp = document.createElement('input');
-        tInp.type = 'time';
-        tInp.className = 'modal-input';
+        const tInp = makeTimeSelect(item.time || '', (v) => { item.time = v; renderPreview(); });
         tInp.title = '시간 (비워 두면 하루 종일)';
-        tInp.style.cssText = 'flex:0 0 110px; min-width:95px;';
-        tInp.value = item.time || '';
-        tInp.onchange = () => { item.time = tInp.value; renderPreview(); };
+        tInp.style.cssText = 'flex:0 0 128px; min-width:112px;';
         row.appendChild(tInp);
 
         const nInp = document.createElement('input');
@@ -5074,6 +5116,7 @@ function renderLeft(){
     const projOwner = getProjOwner(proj);
     const projWrap = document.createElement('div');
     projWrap.className = 'proj-card';
+    projWrap.dataset.proj = proj.name;
     projWrap.style.borderLeft = '3px solid ' + accentColor;
 
     const projHeader = document.createElement('div');
@@ -5184,6 +5227,7 @@ function renderLeft(){
 
       const row = document.createElement('div');
       row.className = 'task-row';
+      row.dataset.taskId = task.id;
       row.style.background = accentColor + '14';
       row.style.borderColor = accentColor + '33';
 
@@ -5599,7 +5643,54 @@ function updateOwnerUI(){
   weeklyBtn.textContent = weeklyViewOpen ? '일간 보기' : '주간 보기';
 }
 
+/* ───────── 주간보기·검색에서 넘어올 때 그 할 일이 바로 보이게 ─────────
+   콘서트 카드가 오른쪽 끝에 있어도 가로 스크롤을 옮겨 주고 잠깐 강조해 줌 */
+let pendingFocus = null;   // { projName, taskId }
+
+function requestTaskFocus(projName, taskId){
+  pendingFocus = { projName: projName || '', taskId: taskId || '' };
+}
+
+function applyPendingFocus(){
+  if(!pendingFocus) return;
+  const want = pendingFocus;
+  pendingFocus = null;
+
+  const grid = document.querySelector('.proj-grid');
+  if(!grid) return;
+  const card = [...grid.querySelectorAll('.proj-card')]
+    .find(c => c.dataset.proj === want.projName);
+  if(!card) return;
+
+  // 카드가 보이도록 가로 스크롤 이동 (화면 안에 이미 있으면 그대로 둠)
+  const gridRect = grid.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  if(cardRect.left < gridRect.left || cardRect.right > gridRect.right){
+    const target = grid.scrollLeft + (cardRect.left - gridRect.left)
+      - Math.max(0, (grid.clientWidth - card.offsetWidth) / 2);
+    const max = grid.scrollWidth - grid.clientWidth;
+    const next = Math.max(0, Math.min(max, target));
+    if(typeof grid.scrollTo === 'function') grid.scrollTo({ left: next, behavior: 'smooth' });
+    else grid.scrollLeft = next;
+  }
+
+  // 카드가 세로로도 화면 밖이면 보이게
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  if(cardRect.top < 0 || cardRect.top > vh - 120){
+    window.scrollTo({ top: window.scrollY + cardRect.top - 140, behavior: 'smooth' });
+  }
+
+  // 어느 할 일이었는지 잠깐 표시
+  let target = null;
+  if(want.taskId) target = card.querySelector('[data-task-id="' + want.taskId + '"]');
+  const flashEl = target || card;
+  flashEl.classList.add('focus-flash');
+  setTimeout(() => { flashEl.classList.remove('focus-flash'); }, 1800);
+}
+
 function withScrollLock(fn){
+  // 이번 렌더가 "특정 할 일을 보여 주기" 위한 거면 예전 위치로 되돌리지 않음
+  const focusing = !!pendingFocus;
   const scrollX = window.scrollX;
   const scrollY = window.scrollY;
   const prevMinHeight = document.body.style.minHeight;
@@ -5611,6 +5702,7 @@ function withScrollLock(fn){
   fn();
 
   const restore = () => {
+    if(focusing) return;
     window.scrollTo(scrollX, scrollY);
     const projGridAfter = document.querySelector('.proj-grid');
     if(projGridAfter && projGridScrollLeft) projGridAfter.scrollLeft = projGridScrollLeft;
@@ -5620,7 +5712,11 @@ function withScrollLock(fn){
   requestAnimationFrame(() => {
     restore();
     document.body.style.minHeight = prevMinHeight;
-    requestAnimationFrame(restore);
+    requestAnimationFrame(() => {
+      restore();
+      // 되돌리기가 모두 끝난 다음에 움직여야 다시 밀리지 않음
+      if(focusing){ try { applyPendingFocus(); } catch(e){} }
+    });
   });
 }
 
