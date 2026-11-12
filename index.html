@@ -303,7 +303,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-08a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-12a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -351,6 +351,7 @@ let taskTemplates = [];
 let showDates = {};
 let projectOwners = {};   // 콘서트명 → 담당자 (할 일이 없어도 유지됨)
 let taskTrash = [];       // 지운 할 일 보관함 (되살릴 수 있게)
+let extraHolidays = [];   // 직접 등록한 휴일 (설날·추석 등). 'YYYY-MM-DD' 목록
 const configRowIds = {};
 
 // base: 'show' = 공연일 기준, 'open' = 티켓오픈일 기준
@@ -390,6 +391,7 @@ function extractConfigRows(flatTasks){
     if(t.text === 'showDates' && parsed && typeof parsed === 'object') showDates = parsed;
     if(t.text === 'projectOwners' && parsed && typeof parsed === 'object') projectOwners = parsed;
     if(t.text === 'taskTrash' && Array.isArray(parsed)) taskTrash = parsed;
+    if(t.text === 'extraHolidays' && Array.isArray(parsed)) extraHolidays = parsed;
   });
   if(taskTemplates.length === 0){
     taskTemplates = [{ id: newTemplateId(), name: '기본', items: DEFAULT_TASK_TEMPLATES.map(t => Object.assign({}, t)) }];
@@ -481,15 +483,16 @@ function baseRankOf(item){
   return i === -1 ? BASE_TYPES.length : i;
 }
 
-function offsetLabel(offset, base){
+function offsetLabel(offset, base, bizDays){
   const n = Number(offset) || 0;
   const bt = baseType(base);
+  const suffix = (bizDays && n !== 0) ? '영' : '';
   if(bt.id === 'show'){
     if(n === 0) return 'D-DAY';
-    return n < 0 ? ('D-' + Math.abs(n)) : ('D+' + n);
+    return (n < 0 ? ('D-' + Math.abs(n)) : ('D+' + n)) + suffix;
   }
   if(n === 0) return bt.prefix + '당일';
-  return n < 0 ? (bt.prefix + '-' + Math.abs(n)) : (bt.prefix + '+' + n);
+  return (n < 0 ? (bt.prefix + '-' + Math.abs(n)) : (bt.prefix + '+' + n)) + suffix;
 }
 
 function offsetLabelColor(offset, base){
@@ -504,8 +507,42 @@ function baseIsoFor(item, baseDates){
   return baseDates[baseType(item.base).id] || '';
 }
 
-function dateFromOffset(showISO, offset){
+/* ───────── 영업일(주말·공휴일 제외) 계산 ─────────
+   날짜가 매년 바뀌지 않는 공휴일은 자동으로 들어가고,
+   설날·추석·부처님오신날·대체공휴일처럼 해마다 달라지는 날은
+   "공휴일 관리"에서 직접 넣으면 모두가 같이 쓰게 됨 */
+const FIXED_HOLIDAY_MMDD = ['01-01','03-01','05-05','06-06','08-15','10-03','10-09','12-25'];
+
+function isFixedHoliday(d){
+  const mmdd = String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  return FIXED_HOLIDAY_MMDD.indexOf(mmdd) !== -1;
+}
+
+function isNonBusinessDay(d){
+  const w = d.getDay();
+  if(w === 0 || w === 6) return true;          // 토·일
+  if(isFixedHoliday(d)) return true;
+  return extraHolidays.indexOf(toISODate(d)) !== -1;
+}
+
+/* 기준일에서 영업일 n일 앞/뒤 (0이면 기준일 그대로) */
+function addBusinessDays(baseDate, n){
+  const cur = new Date(baseDate.getTime());
+  let left = Math.abs(Number(n) || 0);
+  if(left === 0) return cur;
+  const step = (Number(n) || 0) < 0 ? -1 : 1;
+  let guard = 0;
+  while(left > 0 && guard < 2000){
+    cur.setDate(cur.getDate() + step);
+    if(!isNonBusinessDay(cur)) left--;
+    guard++;
+  }
+  return cur;
+}
+
+function dateFromOffset(showISO, offset, bizDays){
   const d = fromISODate(showISO);
+  if(bizDays) return addBusinessDays(d, offset);
   d.setDate(d.getDate() + (Number(offset) || 0));
   return d;
 }
@@ -919,6 +956,118 @@ function restoreTrashEntry(entry){
   sortDataByDate();
   renderAll();
   updateTrashButton();
+}
+
+/* ───────── 공휴일 관리 ─────────
+   영업일 계산에서 뺄 날짜. 설날·추석처럼 해마다 바뀌는 날을 직접 넣음.
+   시트 설정 줄에 저장돼서 회사 사람 모두가 같은 목록을 씀. */
+function saveExtraHolidays(){
+  extraHolidays = extraHolidays
+    .filter(x => /^\d{4}-\d{2}-\d{2}$/.test(String(x || '').trim()))
+    .map(x => x.trim());
+  extraHolidays = [...new Set(extraHolidays)].sort();
+  setStatus('저장 중...');
+  return saveConfigRow('extraHolidays', extraHolidays).then(() => setStatus('동기화됨'));
+}
+
+function openHolidayManager(onDone){
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const box = document.createElement('div');
+  box.className = 'modal-box';
+  box.style.width = '460px';
+
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = '공휴일 관리';
+  box.appendChild(title);
+
+  const note = document.createElement('div');
+  note.style.cssText = 'font-size:12px; color:#777; line-height:1.7; margin-bottom:12px;';
+  note.innerHTML = '"영업일" 기준 항목이 이 날짜들을 건너뛰어요.<br>' +
+    '<b>토·일</b>과 <b>날짜가 고정된 공휴일</b>(신정·삼일절·어린이날·현충일·광복절·개천절·한글날·성탄절)은 ' +
+    '따로 넣지 않아도 자동으로 빠져요.<br>' +
+    '<span style="color:#c0392b;">설날·추석·부처님오신날·대체공휴일</span>처럼 해마다 바뀌는 날만 여기 넣으면 돼요.';
+  box.appendChild(note);
+
+  const addRow = document.createElement('div');
+  addRow.style.cssText = 'display:flex; gap:6px; margin-bottom:10px;';
+  const dIn = document.createElement('input');
+  dIn.type = 'date';
+  dIn.className = 'modal-input';
+  dIn.style.flex = '1';
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '추가';
+  addBtn.style.cssText = 'font-size:12px; padding:7px 14px; height:auto; flex-shrink:0;';
+  addRow.appendChild(dIn);
+  addRow.appendChild(addBtn);
+  box.appendChild(addRow);
+
+  const listWrap = document.createElement('div');
+  listWrap.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; max-height:240px; overflow-y:auto; margin-bottom:14px;';
+  box.appendChild(listWrap);
+
+  function draw(){
+    listWrap.innerHTML = '';
+    if(extraHolidays.length === 0){
+      const p = document.createElement('div');
+      p.style.cssText = 'font-size:12px; color:#999; padding:16px; text-align:center;';
+      p.textContent = '등록된 날짜가 없어요.';
+      listWrap.appendChild(p);
+      return;
+    }
+    extraHolidays.slice().sort().forEach((iso, i) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:7px 12px; font-size:13px;' +
+        (i % 2 ? 'background:#faf9f6;' : '');
+      const label = document.createElement('span');
+      label.style.flex = '1';
+      const d = fromISODate(iso);
+      label.textContent = iso + '  (' + WEEKDAY_CHARS[d.getDay()] + ')';
+      if(d < new Date(new Date().getFullYear(), 0, 1)) label.style.color = '#bbb';
+      const del = document.createElement('button');
+      del.textContent = '✕';
+      del.style.cssText = 'font-size:11px; padding:3px 8px; height:auto; color:#c0392b; flex-shrink:0;';
+      del.onclick = () => {
+        extraHolidays = extraHolidays.filter(x => x !== iso);
+        saveExtraHolidays();
+        draw();
+      };
+      row.appendChild(label);
+      row.appendChild(del);
+      listWrap.appendChild(row);
+    });
+  }
+  addBtn.onclick = () => {
+    const v = dIn.value;
+    if(!v) return;
+    if(extraHolidays.indexOf(v) === -1) extraHolidays.push(v);
+    dIn.value = '';
+    saveExtraHolidays();
+    draw();
+  };
+  draw();
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex; justify-content:flex-end;';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'primary';
+  closeBtn.textContent = '닫기';
+  closeBtn.onclick = () => {
+    if(backdrop.parentNode) document.body.removeChild(backdrop);
+    if(typeof onDone === 'function') onDone();
+  };
+  actions.appendChild(closeBtn);
+  box.appendChild(actions);
+
+  backdrop.appendChild(box);
+  backdrop.addEventListener('mousedown', (e) => {
+    if(e.target === backdrop){
+      document.body.removeChild(backdrop);
+      if(typeof onDone === 'function') onDone();
+    }
+  });
+  document.body.appendChild(backdrop);
 }
 
 function openTrashModal(){
@@ -3710,7 +3859,7 @@ function openShowDateManager(initialProjName){
     const sorted = dateEvents.concat((tplSet ? (tplSet.items || []) : []).slice()
       .map(t => {
         const bIso = baseIsoFor(t, baseDates);
-        return { tpl: t, date: bIso ? dateFromOffset(bIso, t.offset) : null };
+        return { tpl: t, date: bIso ? dateFromOffset(bIso, t.offset, t.bizDays) : null };
       }))
       .sort((a,b) => {
         if(a.date && b.date) return a.date - b.date;
@@ -3785,8 +3934,9 @@ function openShowDateManager(initialProjName){
         offBadge.style.cssText = 'flex:0 0 60px; font-size:10px; font-weight:700; color:' + bc + ';';
         offBadge.textContent = '입력일';
       } else {
-        offBadge.style.cssText = 'flex:0 0 60px; font-size:10px; font-weight:700; color:' + offsetLabelColor(tpl.offset, tpl.base) + ';';
-        offBadge.textContent = offsetLabel(tpl.offset, tpl.base);
+        offBadge.style.cssText = 'flex:0 0 68px; font-size:10px; font-weight:700; color:' + offsetLabelColor(tpl.offset, tpl.base) + ';';
+        offBadge.textContent = offsetLabel(tpl.offset, tpl.base, tpl.bizDays);
+        if(tpl.bizDays) offBadge.title = '영업일 기준 (주말·공휴일 제외)';
       }
       row.appendChild(offBadge);
 
@@ -4050,6 +4200,7 @@ function openShowDateManager(initialProjName){
     head.style.cssText = 'display:flex; gap:8px; font-size:10px; color:#999; padding:0 4px 6px; font-weight:600;';
     head.innerHTML = '<span style="flex:0 0 104px;">기준</span>' +
       '<span style="flex:0 0 60px;">기한</span>' +
+      '<span style="flex:0 0 68px;">일수 기준</span>' +
       '<span style="flex:1 1 auto;">업무명</span>' +
       '<span style="flex:0 0 72px;">구분</span>' +
       '<span style="flex:0 0 92px;">카테고리</span>' +
@@ -4094,9 +4245,23 @@ function openShowDateManager(initialProjName){
         off.className = 'modal-input';
         off.style.cssText = 'flex:0 0 60px; padding:5px 7px; font-size:12px; color:' + offsetLabelColor(tpl.offset, tpl.base) + '; font-weight:600;';
         off.value = tpl.offset || 0;
-        off.title = offsetLabel(tpl.offset, tpl.base);
+        off.title = offsetLabel(tpl.offset, tpl.base, tpl.bizDays);
         off.onchange = () => { tpl.offset = parseInt(off.value, 10) || 0; drawRows(); };
         row.appendChild(off);
+
+        const bizI = document.createElement('select');
+        bizI.className = 'modal-input';
+        bizI.style.cssText = 'flex:0 0 68px; padding:5px 3px; font-size:11px;';
+        bizI.title = '영업일을 고르면 주말·공휴일을 빼고 날짜를 셉니다';
+        [['', '달력일'], ['biz', '영업일']].forEach(([v, l]) => {
+          const o2 = document.createElement('option');
+          o2.value = v; o2.textContent = l;
+          if((tpl.bizDays ? 'biz' : '') === v) o2.selected = true;
+          bizI.appendChild(o2);
+        });
+        if(tpl.bizDays) bizI.style.color = '#1D9E75';
+        bizI.onchange = () => { tpl.bizDays = (bizI.value === 'biz'); drawRows(); };
+        row.appendChild(bizI);
 
         const nameI = document.createElement('input');
         nameI.type = 'text';
@@ -4177,7 +4342,7 @@ function openShowDateManager(initialProjName){
     addBtn.onclick = () => {
       const set = currentSet();
       if(!set) return;
-      set.items.push({ name:'', base:'show', offset:-7, type:'task', category:'', tag:'', _new: true });
+      set.items.push({ name:'', base:'show', offset:-7, bizDays:false, type:'task', category:'', tag:'', _new: true });
       drawRows();
       rowsWrap.scrollTop = rowsWrap.scrollHeight;
       const nameInputs = rowsWrap.querySelectorAll('[data-role="tplName"]');
@@ -4194,6 +4359,11 @@ function openShowDateManager(initialProjName){
       fillSetSelect(set.id);
       drawRows();
     };
+    const holidayBtn = document.createElement('button');
+    holidayBtn.textContent = '📅 공휴일 관리';
+    holidayBtn.title = '영업일 계산에서 뺄 날짜 (설날·추석 등)';
+    holidayBtn.onclick = () => { openHolidayManager(() => { drawRows(); renderPreview(); }); };
+
     const spacer = document.createElement('div');
     spacer.style.flex = '1 1 auto';
     const saveBtn = document.createElement('button');
@@ -4208,6 +4378,7 @@ function openShowDateManager(initialProjName){
             name: t.name.trim(),
             base: baseType(t.base).id,
             offset: parseInt(t.offset, 10) || 0,
+            bizDays: !!t.bizDays,
             type: t.type === 'event' ? 'event' : 'task',
             category: t.type === 'event' ? (t.category || '기타') : '',
             tag: (t.tag || '').trim()
@@ -4229,6 +4400,7 @@ function openShowDateManager(initialProjName){
     };
     act.appendChild(addBtn);
     act.appendChild(resetBtn);
+    act.appendChild(holidayBtn);
     act.appendChild(spacer);
     act.appendChild(saveBtn);
     paneTpl.appendChild(act);
