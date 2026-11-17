@@ -304,7 +304,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-17b';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-17c';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -354,6 +354,7 @@ let projectOwners = {};   // 콘서트명 → 담당자 (할 일이 없어도 �
 let taskTrash = [];       // 지운 할 일 보관함 (되살릴 수 있게)
 let extraHolidays = [];   // 직접 등록한 휴일 (설날·추석 등). 'YYYY-MM-DD' 목록
 let commonWorkNames = []; // 콘서트가 아닌 "공통 업무" (담당자별 현황에서 콘서트 수에 안 들어감)
+let closedProjects = [];  // 직접 "종료" 표시한 콘서트
 const configRowIds = {};
 
 // base: 'show' = 공연일 기준, 'open' = 티켓오픈일 기준
@@ -395,6 +396,7 @@ function extractConfigRows(flatTasks){
     if(t.text === 'taskTrash' && Array.isArray(parsed)) taskTrash = parsed;
     if(t.text === 'extraHolidays' && Array.isArray(parsed)) extraHolidays = parsed;
     if(t.text === 'commonWorkNames' && Array.isArray(parsed)) commonWorkNames = parsed;
+    if(t.text === 'closedProjects' && Array.isArray(parsed)) closedProjects = parsed;
   });
   if(taskTemplates.length === 0){
     taskTemplates = [{ id: newTemplateId(), name: '기본', items: DEFAULT_TASK_TEMPLATES.map(t => Object.assign({}, t)) }];
@@ -966,6 +968,15 @@ function restoreTrashEntry(entry){
    시트 설정 줄에 저장돼서 회사 사람 모두가 같은 목록을 씀. */
 function isCommonWork(name){ return commonWorkNames.indexOf(name) !== -1; }
 
+function isProjectClosed(name){ return closedProjects.indexOf(name) !== -1; }
+
+function setProjectClosed(name, on){
+  if(on){ if(!isProjectClosed(name)) closedProjects.push(name); }
+  else { closedProjects = closedProjects.filter(n => n !== name); }
+  setStatus('저장 중...');
+  return saveConfigRow('closedProjects', closedProjects).then(() => setStatus('동기화됨'));
+}
+
 function setCommonWork(name, on){
   if(on){ if(!isCommonWork(name)) commonWorkNames.push(name); }
   else { commonWorkNames = commonWorkNames.filter(n => n !== name); }
@@ -1116,8 +1127,11 @@ function collectOwnerLoad(includeDone){
 
     const showIso = getShowDate(pName);
     const showD = showIso ? fromISODate(showIso) : null;
-    const finished = !!(showD && showD < today) && open === 0;
-    if(!includeDone && finished && !isCommonWork(pName)) return;
+    const closed = isProjectClosed(pName);
+    // 공연일이 지났고 남은 일도 없으면 자동으로 끝난 것으로 봄 (공통 업무는 제외)
+    const autoDone = !!(showD && showD < today) && open === 0 && !isCommonWork(pName);
+    const finished = closed || autoDone;
+    if(!includeDone && finished) return;
 
     // 담당자가 실제로 지정된 경우만 인정 (지정이 없으면 "담당자 미지정"으로)
     let ownerStr = projectOwners[pName] || '';
@@ -1140,7 +1154,8 @@ function collectOwnerLoad(includeDone){
       const b = bucket(nm);
       const entry = {
         name: pName, showIso: showIso, open: open, done: done, total: total,
-        overdue: overdue, shared: names.length > 1, finished: finished, common: common
+        overdue: overdue, shared: names.length > 1, finished: finished,
+        closed: closed, common: common
       };
       // "공통 업무"는 콘서트 수에서 빼고 따로 모음 (할 일 수는 그대로 셈)
       if(common) b.commons.push(entry); else b.projects.push(entry);
@@ -1162,11 +1177,10 @@ function openOwnerLoad(){
   backdrop.className = 'modal-backdrop';
   const box = document.createElement('div');
   box.className = 'modal-box';
-  box.style.width = '720px';
+  box.style.cssText += 'width:min(1180px, 94vw); max-width:none;';
 
   let includeDone = false;
   let onlyMyTeam = false;
-  const expanded = {};
 
   const title = document.createElement('div');
   title.className = 'modal-title';
@@ -1174,7 +1188,7 @@ function openOwnerLoad(){
   box.appendChild(title);
 
   const ctrl = document.createElement('div');
-  ctrl.style.cssText = 'display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;';
+  ctrl.style.cssText = 'display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:12px;';
   box.appendChild(ctrl);
 
   function chip(label, active, onClick){
@@ -1188,6 +1202,8 @@ function openOwnerLoad(){
 
   const listWrap = document.createElement('div');
   box.appendChild(listWrap);
+
+  function close(){ if(backdrop.parentNode) document.body.removeChild(backdrop); }
 
   function refresh(){
     ctrl.innerHTML = '';
@@ -1222,138 +1238,142 @@ function openOwnerLoad(){
       (includeDone ? '' : ' · 진행 중만');
     listWrap.appendChild(sum);
 
-    const table = document.createElement('div');
-    table.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden; max-height:430px; overflow-y:auto;';
+    // ── 사람별로 세로 칸을 만들어 옆으로 나열 ──
+    const boardWrap = document.createElement('div');
+    boardWrap.style.cssText = 'display:flex; gap:12px; overflow-x:auto; align-items:flex-start; padding-bottom:10px;';
 
-    const maxProj = Math.max(1, ...people.map(p => p.projects.length));
-    let lastTeam = null;
+    const sortByDate = (a, b) => {
+      const ai = a.showIso || '9999', bi = b.showIso || '9999';
+      return ai < bi ? -1 : (ai > bi ? 1 : a.name.localeCompare(b.name, 'ko'));
+    };
+    const today = new Date(); today.setHours(0,0,0,0);
 
-    people.forEach((p, i) => {
-      const teamKey = p.name === '(담당자 없음)' ? '\u0000none' : (p.team || '\u0000noteam');
-      if(teamKey !== lastTeam){
-        lastTeam = teamKey;
-        const th = document.createElement('div');
-        th.style.cssText = 'padding:7px 12px; font-size:11px; font-weight:700; color:#888; background:#f5f4f0; border-top:1px solid #e8e6e0;';
-        th.textContent = p.name === '(담당자 없음)' ? '담당자 미지정'
-          : (p.team ? (p.team) : '팀 미지정');
-        table.appendChild(th);
-      }
-
-      const row = document.createElement('div');
-      row.style.cssText = 'padding:9px 12px; border-top:1px solid #f0efea; cursor:pointer;' +
-        (p.name === currentOwner ? ' background:#f3f7ff;' : '');
-      row.onclick = () => { expanded[p.name] = !expanded[p.name]; refresh(); };
+    people.forEach(p => {
+      const isMe = (p.name === currentOwner);
+      const col = document.createElement('div');
+      col.style.cssText = 'flex:0 0 246px; border:1px solid ' + (isMe ? '#bfd4ff' : '#e8e6e0') +
+        '; border-radius:12px; background:#fff; overflow:hidden; display:flex; flex-direction:column;';
 
       const head = document.createElement('div');
-      head.style.cssText = 'display:flex; align-items:center; gap:10px;';
-
-      const caret = document.createElement('span');
-      caret.textContent = expanded[p.name] ? '▾' : '▸';
-      caret.style.cssText = 'color:#bbb; font-size:11px; flex-shrink:0; width:10px;';
-      head.appendChild(caret);
-
+      head.style.cssText = 'padding:10px 12px; background:' + (isMe ? '#f3f7ff' : '#faf9f6') +
+        '; border-bottom:1px solid #efeee9;';
+      const nameLine = document.createElement('div');
+      nameLine.style.cssText = 'display:flex; align-items:center; gap:6px; margin-bottom:4px;';
+      const dot = document.createElement('span');
+      dot.style.cssText = 'width:9px; height:9px; border-radius:50%; flex-shrink:0; background:' + colorFor(p.name) + ';';
+      nameLine.appendChild(dot);
       const nm = document.createElement('span');
-      nm.textContent = p.name + (p.name === currentOwner ? ' (나)' : '');
-      nm.style.cssText = 'font-size:13px; font-weight:600; flex:0 0 120px;' +
+      nm.textContent = p.name + (isMe ? ' (나)' : '');
+      nm.style.cssText = 'font-size:13px; font-weight:700; flex:1; min-width:0; word-break:break-all;' +
         (p.name === '(담당자 없음)' ? ' color:#aaa;' : '');
-      head.appendChild(nm);
+      nameLine.appendChild(nm);
+      if(p.team){
+        const tb = document.createElement('span');
+        tb.textContent = p.team;
+        tb.style.cssText = 'font-size:10px; padding:1px 6px; border-radius:20px; background:#eceaff; color:#5b4ebd; flex-shrink:0;';
+        nameLine.appendChild(tb);
+      }
+      head.appendChild(nameLine);
 
-      const barWrap = document.createElement('div');
-      barWrap.style.cssText = 'flex:1 1 auto; min-width:60px; display:flex; align-items:center; gap:8px;';
-      const bar = document.createElement('div');
-      bar.style.cssText = 'flex:1; height:8px; background:#efeee9; border-radius:20px; overflow:hidden;';
-      const fill = document.createElement('div');
-      fill.style.cssText = 'height:100%; border-radius:20px; background:' + colorFor(p.name) + ';' +
-        ' width:' + Math.round(p.projects.length / maxProj * 100) + '%;';
-      bar.appendChild(fill);
-      barWrap.appendChild(bar);
-      const cnt = document.createElement('span');
-      cnt.textContent = '콘서트 ' + p.projects.length;
-      cnt.style.cssText = 'font-size:12px; font-weight:700; color:#444; flex:0 0 62px; text-align:right;';
-      barWrap.appendChild(cnt);
-      head.appendChild(barWrap);
+      const statLine = document.createElement('div');
+      statLine.style.cssText = 'font-size:11px; color:#777;';
+      statLine.innerHTML = '콘서트 <b style="color:#333; font-size:13px;">' + p.projects.length + '</b>' +
+        ' <span style="color:#ddd;">|</span> 남은 일 <b style="color:#333;">' + p.open + '</b>' +
+        (p.overdue > 0 ? ' <span style="color:#c0392b;">지남 ' + p.overdue + '</span>' : '');
+      head.appendChild(statLine);
+      col.appendChild(head);
 
-      const stat = document.createElement('span');
-      stat.style.cssText = 'flex:0 0 150px; text-align:right; font-size:12px; color:#666;';
-      stat.innerHTML = '남은 일 <b style="color:#444;">' + p.open + '</b>' +
-        (p.overdue > 0 ? ' <span style="color:#c0392b;">(지남 ' + p.overdue + ')</span>' : '') +
-        ' <span style="color:#bbb;">/ 완료 ' + p.done + '</span>';
-      head.appendChild(stat);
+      const body = document.createElement('div');
+      body.style.cssText = 'max-height:400px; overflow-y:auto;';
 
-      row.appendChild(head);
-
-      if(expanded[p.name]){
-        const sub = document.createElement('div');
-        sub.style.cssText = 'margin:8px 0 2px 20px;';
-        const today = new Date(); today.setHours(0,0,0,0);
-        const sortByDate = (a, b) => {
-          const ai = a.showIso || '9999', bi = b.showIso || '9999';
-          return ai < bi ? -1 : (ai > bi ? 1 : a.name.localeCompare(b.name, 'ko'));
-        };
-        const shown = p.projects.slice().sort(sortByDate).concat(p.commons.slice().sort(sortByDate));
-        shown.forEach(pr => {
-          const line = document.createElement('div');
-          line.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 0; font-size:12px;';
-          const dot = document.createElement('span');
-          dot.style.cssText = 'width:7px; height:7px; border-radius:50%; flex-shrink:0; background:' + colorFor(pr.name) + ';';
-          line.appendChild(dot);
-          const pn = document.createElement('span');
-          pn.textContent = pr.name;
-          pn.style.cssText = 'flex:1 1 auto; min-width:0; word-break:break-all;' + ((pr.finished || pr.common) ? ' color:#aaa;' : '');
-          line.appendChild(pn);
-          if(pr.common){
-            const cm = document.createElement('span');
-            cm.textContent = '공통 업무';
-            cm.title = '콘서트 수에는 포함되지 않아요';
-            cm.style.cssText = 'font-size:10px; padding:1px 6px; border-radius:20px; background:#f0efea; color:#888; flex-shrink:0;';
-            line.appendChild(cm);
-          }
-          if(pr.shared){
-            const sh = document.createElement('span');
-            sh.textContent = '공동';
-            sh.style.cssText = 'font-size:10px; padding:1px 6px; border-radius:20px; background:#eef2ff; color:#3730a3; flex-shrink:0;';
-            line.appendChild(sh);
-          }
-          const dday = document.createElement('span');
-          dday.style.cssText = 'flex:0 0 96px; text-align:right; color:#888;';
-          if(pr.showIso){
-            const d = fromISODate(pr.showIso);
-            const diff = Math.round((d - today) / 86400000);
-            dday.textContent = formatDateShort(d) + ' ' + (diff === 0 ? 'D-DAY' : (diff > 0 ? 'D-' + diff : 'D+' + Math.abs(diff)));
-            if(diff >= 0 && diff <= 7) dday.style.color = '#c0392b';
-          } else {
-            dday.textContent = '공연일 미입력';
-            dday.style.color = '#ccc';
-          }
-          line.appendChild(dday);
-          const st = document.createElement('span');
-          st.style.cssText = 'flex:0 0 84px; text-align:right; color:#666;';
-          st.innerHTML = pr.total === 0 ? '<span style="color:#ccc;">할 일 없음</span>'
-            : ('남은 ' + pr.open + ' / ' + pr.total +
-               (pr.overdue > 0 ? ' <span style="color:#c0392b;">!</span>' : ''));
-          line.appendChild(st);
-          const go = document.createElement('button');
-          go.textContent = '보기';
-          go.title = '이 콘서트의 업무 현황 열기';
-          go.style.cssText = 'font-size:10px; padding:3px 8px; height:auto; flex-shrink:0;';
-          go.onclick = (e) => {
-            e.stopPropagation();
-            close();
-            openProjectHistory(pr.name);
-          };
-          line.appendChild(go);
-          sub.appendChild(line);
-        });
-        row.appendChild(sub);
+      const shown = p.projects.slice().sort(sortByDate).concat(p.commons.slice().sort(sortByDate));
+      if(shown.length === 0){
+        const e = document.createElement('div');
+        e.style.cssText = 'padding:14px; font-size:11px; color:#bbb; text-align:center;';
+        e.textContent = '맡은 콘서트가 없어요';
+        body.appendChild(e);
       }
 
-      table.appendChild(row);
+      shown.forEach((pr, i) => {
+        const item = document.createElement('div');
+        item.style.cssText = 'padding:8px 10px; border-top:' + (i === 0 ? 'none' : '1px solid #f3f2ee') + ';';
+
+        const l1 = document.createElement('div');
+        l1.style.cssText = 'display:flex; align-items:flex-start; gap:5px; margin-bottom:3px;';
+        const pdot = document.createElement('span');
+        pdot.style.cssText = 'width:6px; height:6px; border-radius:50%; flex-shrink:0; margin-top:5px; background:' + colorFor(pr.name) + ';';
+        l1.appendChild(pdot);
+        const pn = document.createElement('span');
+        pn.textContent = pr.name;
+        pn.style.cssText = 'font-size:12px; flex:1; min-width:0; word-break:break-all; line-height:1.45;' +
+          ((pr.finished || pr.common) ? ' color:#aaa;' : ' color:#222;');
+        l1.appendChild(pn);
+        item.appendChild(l1);
+
+        const badges = document.createElement('div');
+        badges.style.cssText = 'display:flex; gap:4px; flex-wrap:wrap; margin:0 0 3px 11px;';
+        const addBadge = (text, bg, fg) => {
+          const x = document.createElement('span');
+          x.textContent = text;
+          x.style.cssText = 'font-size:9px; padding:1px 5px; border-radius:20px; background:' + bg + '; color:' + fg + ';';
+          badges.appendChild(x);
+        };
+        if(pr.common) addBadge('공통 업무', '#f0efea', '#888');
+        if(pr.shared) addBadge('공동', '#eef2ff', '#3730a3');
+        if(pr.closed) addBadge('종료', '#f5e9e9', '#a05252');
+        if(badges.children.length) item.appendChild(badges);
+
+        const l2 = document.createElement('div');
+        l2.style.cssText = 'display:flex; align-items:center; gap:5px; margin-left:11px; font-size:10px; color:#999;';
+        const dd = document.createElement('span');
+        dd.style.cssText = 'flex:1; min-width:0;';
+        if(pr.showIso){
+          const d = fromISODate(pr.showIso);
+          const diff = Math.round((d - today) / 86400000);
+          dd.textContent = formatDateShort(d) + ' ' + (diff === 0 ? 'D-DAY' : (diff > 0 ? 'D-' + diff : 'D+' + Math.abs(diff)));
+          if(!pr.finished && diff >= 0 && diff <= 7) dd.style.color = '#c0392b';
+        } else {
+          dd.textContent = pr.total === 0 ? '할 일 없음' : ('남은 ' + pr.open + ' / ' + pr.total);
+        }
+        l2.appendChild(dd);
+        if(pr.showIso && pr.total > 0){
+          const st = document.createElement('span');
+          st.textContent = '남은 ' + pr.open + '/' + pr.total;
+          st.style.cssText = 'flex-shrink:0;' + (pr.overdue > 0 ? ' color:#c0392b;' : '');
+          l2.appendChild(st);
+        }
+        item.appendChild(l2);
+
+        const acts = document.createElement('div');
+        acts.style.cssText = 'display:flex; gap:4px; margin:5px 0 0 11px;';
+        const go = document.createElement('button');
+        go.textContent = '보기';
+        go.title = '이 콘서트의 업무 현황 열기';
+        go.style.cssText = 'font-size:10px; padding:2px 7px; height:auto;';
+        go.onclick = () => { close(); openProjectHistory(pr.name); };
+        acts.appendChild(go);
+        const fin = document.createElement('button');
+        fin.textContent = pr.closed ? '진행으로' : '종료';
+        fin.title = pr.closed ? '다시 진행 중으로 되돌려요' : '이 콘서트를 끝난 것으로 표시해요';
+        fin.style.cssText = 'font-size:10px; padding:2px 7px; height:auto;' + (pr.closed ? '' : ' color:#888;');
+        fin.onclick = () => { setProjectClosed(pr.name, !pr.closed); refresh(); };
+        acts.appendChild(fin);
+        item.appendChild(acts);
+
+        body.appendChild(item);
+      });
+
+      col.appendChild(body);
+      boardWrap.appendChild(col);
     });
 
-    listWrap.appendChild(table);
-  }
+    listWrap.appendChild(boardWrap);
 
-  function close(){ if(backdrop.parentNode) document.body.removeChild(backdrop); }
+    const hint = document.createElement('div');
+    hint.style.cssText = 'font-size:11px; color:#aaa; margin-top:6px;';
+    hint.textContent = '공연일이 없어서 끝났는지 알 수 없는 콘서트는 "종료"를 눌러 직접 정리할 수 있어요. 옆으로 밀면 다른 담당자가 나와요.';
+    listWrap.appendChild(hint);
+  }
 
   refresh();
 
@@ -2771,6 +2791,10 @@ function deleteProjectName(name){
     commonWorkNames = commonWorkNames.filter(n => n !== name);
     saveConfigRow('commonWorkNames', commonWorkNames);
   }
+  if(isProjectClosed(name)){
+    closedProjects = closedProjects.filter(n => n !== name);
+    saveConfigRow('closedProjects', closedProjects);
+  }
 }
 
 /* 이 콘서트에 등록된 할 일/일정 개수 */
@@ -2885,6 +2909,11 @@ function renameProjectGlobally(oldName, newName){
   if(ci !== -1){
     commonWorkNames[ci] = newVal;
     saveConfigRow('commonWorkNames', commonWorkNames);
+  }
+  const cl = closedProjects.indexOf(oldName);
+  if(cl !== -1){
+    closedProjects[cl] = newVal;
+    saveConfigRow('closedProjects', closedProjects);
   }
 
   data.forEach(dateGroup => {
