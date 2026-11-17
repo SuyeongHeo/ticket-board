@@ -264,6 +264,7 @@
     </div>
     <div style="display:flex; gap:8px; align-items:center; position:relative;">
       <button id="projHistBtn" title="콘서트를 골라서 완료/미완료 업무를 한 번에 보기">📋 콘서트별 업무 현황</button>
+      <button id="ownerLoadBtn" title="담당자별로 콘서트가 몇 개씩인지 보기">👥 담당자별 현황</button>
       <button id="rolloverBtn" title="어제 미완료 할 일을 오늘로 옮기기">어제 미완료 가져오기</button>
       <button id="stickyNoteToggleBtn">메모</button>
       <button id="trashBtn" title="지운 할 일 되살리기">🗑 휴지통</button>
@@ -303,7 +304,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-12a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-17a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -1067,6 +1068,281 @@ function openHolidayManager(onDone){
       if(typeof onDone === 'function') onDone();
     }
   });
+  document.body.appendChild(backdrop);
+}
+
+/* ═══════════ 담당자별 업무 현황 ═══════════
+   누가 어떤 콘서트를 몇 개 맡고 있는지, 남은 업무가 얼마인지 한눈에 */
+function collectOwnerLoad(includeDone){
+  const today = new Date(); today.setHours(0,0,0,0);
+  const byPerson = {};   // 이름 → { name, team, projects:[], open, done, overdue }
+
+  function bucket(name){
+    if(!byPerson[name]){
+      byPerson[name] = { name: name, team: ownerTeams[name] || '', projects: [], open: 0, done: 0, overdue: 0 };
+    }
+    return byPerson[name];
+  }
+
+  getKnownProjectNames().forEach(pName => {
+    // 이 콘서트의 할 일 모으기
+    let open = 0, done = 0, overdue = 0, total = 0;
+    data.forEach(g => {
+      const gd = parseDateLabel(g.date);
+      g.projects.forEach(pr => {
+        if(pr.name !== pName) return;
+        pr.tasks.forEach(t => {
+          if(t.category) return;          // 일정은 할 일 수에서 제외
+          total++;
+          if(t.done) done++;
+          else {
+            open++;
+            if(gd && gd < today) overdue++;
+          }
+        });
+      });
+    });
+
+    const showIso = getShowDate(pName);
+    const showD = showIso ? fromISODate(showIso) : null;
+    const finished = !!(showD && showD < today) && open === 0;
+    if(!includeDone && finished) return;
+
+    // 담당자가 실제로 지정된 경우만 인정 (지정이 없으면 "담당자 미지정"으로)
+    let ownerStr = projectOwners[pName] || '';
+    if(!ownerStr){
+      for(const g of data){
+        for(const pr of g.projects){
+          if(pr.name === pName){
+            const o = getProjOwner(pr);
+            if(o){ ownerStr = o; break; }
+          }
+        }
+        if(ownerStr) break;
+      }
+    }
+    const names = splitOwnerNames(ownerStr);
+    const list = names.length ? names : ['(담당자 없음)'];
+
+    list.forEach(nm => {
+      const b = bucket(nm);
+      b.projects.push({
+        name: pName, showIso: showIso, open: open, done: done, total: total,
+        overdue: overdue, shared: names.length > 1, finished: finished
+      });
+      b.open += open; b.done += done; b.overdue += overdue;
+    });
+  });
+
+  return Object.values(byPerson).sort((a, b) => {
+    const ta = a.name === '(담당자 없음)' ? '￿￿' : (a.team || '￿');
+    const tb = b.name === '(담당자 없음)' ? '￿￿' : (b.team || '￿');
+    if(ta !== tb) return ta < tb ? -1 : 1;
+    if(b.projects.length !== a.projects.length) return b.projects.length - a.projects.length;
+    return a.name.localeCompare(b.name, 'ko');
+  });
+}
+
+function openOwnerLoad(){
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const box = document.createElement('div');
+  box.className = 'modal-box';
+  box.style.width = '720px';
+
+  let includeDone = false;
+  let onlyMyTeam = false;
+  const expanded = {};
+
+  const title = document.createElement('div');
+  title.className = 'modal-title';
+  title.textContent = '담당자별 업무 현황';
+  box.appendChild(title);
+
+  const ctrl = document.createElement('div');
+  ctrl.style.cssText = 'display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px;';
+  box.appendChild(ctrl);
+
+  function chip(label, active, onClick){
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = 'font-size:12px; padding:5px 11px; height:auto; border-radius:20px;' +
+      (active ? ' background:#2563eb; color:#fff; border-color:#2563eb;' : '');
+    b.onclick = onClick;
+    return b;
+  }
+
+  const listWrap = document.createElement('div');
+  box.appendChild(listWrap);
+
+  function refresh(){
+    ctrl.innerHTML = '';
+    ctrl.appendChild(chip('진행 중만', !includeDone, () => { includeDone = false; refresh(); }));
+    ctrl.appendChild(chip('끝난 것 포함', includeDone, () => { includeDone = true; refresh(); }));
+    const myTeam = ownerTeams[currentOwner] || '';
+    if(myTeam){
+      const sp = document.createElement('span');
+      sp.style.cssText = 'width:10px;';
+      ctrl.appendChild(sp);
+      ctrl.appendChild(chip('내 팀(' + myTeam + ')만', onlyMyTeam, () => { onlyMyTeam = !onlyMyTeam; refresh(); }));
+    }
+
+    listWrap.innerHTML = '';
+    let people = collectOwnerLoad(includeDone);
+    if(onlyMyTeam && myTeam) people = people.filter(p => p.team === myTeam);
+
+    if(people.length === 0){
+      const p = document.createElement('div');
+      p.style.cssText = 'font-size:13px; color:#999; padding:24px; text-align:center;';
+      p.textContent = '표시할 담당자가 없어요.';
+      listWrap.appendChild(p);
+      return;
+    }
+
+    const totProj = people.reduce((n, p) => n + p.projects.length, 0);
+    const sum = document.createElement('div');
+    sum.style.cssText = 'font-size:12px; color:#777; margin-bottom:10px;';
+    sum.textContent = '담당자 ' + people.length + '명 · 콘서트 ' + totProj + '건' +
+      (includeDone ? '' : ' (진행 중만)');
+    listWrap.appendChild(sum);
+
+    const table = document.createElement('div');
+    table.style.cssText = 'border:1px solid #e8e6e0; border-radius:10px; overflow:hidden; max-height:430px; overflow-y:auto;';
+
+    const maxProj = Math.max(1, ...people.map(p => p.projects.length));
+    let lastTeam = null;
+
+    people.forEach((p, i) => {
+      const teamKey = p.name === '(담당자 없음)' ? '\u0000none' : (p.team || '\u0000noteam');
+      if(teamKey !== lastTeam){
+        lastTeam = teamKey;
+        const th = document.createElement('div');
+        th.style.cssText = 'padding:7px 12px; font-size:11px; font-weight:700; color:#888; background:#f5f4f0; border-top:1px solid #e8e6e0;';
+        th.textContent = p.name === '(담당자 없음)' ? '담당자 미지정'
+          : (p.team ? (p.team) : '팀 미지정');
+        table.appendChild(th);
+      }
+
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:9px 12px; border-top:1px solid #f0efea; cursor:pointer;' +
+        (p.name === currentOwner ? ' background:#f3f7ff;' : '');
+      row.onclick = () => { expanded[p.name] = !expanded[p.name]; refresh(); };
+
+      const head = document.createElement('div');
+      head.style.cssText = 'display:flex; align-items:center; gap:10px;';
+
+      const caret = document.createElement('span');
+      caret.textContent = expanded[p.name] ? '▾' : '▸';
+      caret.style.cssText = 'color:#bbb; font-size:11px; flex-shrink:0; width:10px;';
+      head.appendChild(caret);
+
+      const nm = document.createElement('span');
+      nm.textContent = p.name + (p.name === currentOwner ? ' (나)' : '');
+      nm.style.cssText = 'font-size:13px; font-weight:600; flex:0 0 120px;' +
+        (p.name === '(담당자 없음)' ? ' color:#aaa;' : '');
+      head.appendChild(nm);
+
+      const barWrap = document.createElement('div');
+      barWrap.style.cssText = 'flex:1 1 auto; min-width:60px; display:flex; align-items:center; gap:8px;';
+      const bar = document.createElement('div');
+      bar.style.cssText = 'flex:1; height:8px; background:#efeee9; border-radius:20px; overflow:hidden;';
+      const fill = document.createElement('div');
+      fill.style.cssText = 'height:100%; border-radius:20px; background:' + colorFor(p.name) + ';' +
+        ' width:' + Math.round(p.projects.length / maxProj * 100) + '%;';
+      bar.appendChild(fill);
+      barWrap.appendChild(bar);
+      const cnt = document.createElement('span');
+      cnt.textContent = '콘서트 ' + p.projects.length;
+      cnt.style.cssText = 'font-size:12px; font-weight:700; color:#444; flex:0 0 62px; text-align:right;';
+      barWrap.appendChild(cnt);
+      head.appendChild(barWrap);
+
+      const stat = document.createElement('span');
+      stat.style.cssText = 'flex:0 0 150px; text-align:right; font-size:12px; color:#666;';
+      stat.innerHTML = '남은 일 <b style="color:#444;">' + p.open + '</b>' +
+        (p.overdue > 0 ? ' <span style="color:#c0392b;">(지남 ' + p.overdue + ')</span>' : '') +
+        ' <span style="color:#bbb;">/ 완료 ' + p.done + '</span>';
+      head.appendChild(stat);
+
+      row.appendChild(head);
+
+      if(expanded[p.name]){
+        const sub = document.createElement('div');
+        sub.style.cssText = 'margin:8px 0 2px 20px;';
+        const today = new Date(); today.setHours(0,0,0,0);
+        p.projects.slice().sort((a, b) => {
+          const ai = a.showIso || '9999', bi = b.showIso || '9999';
+          return ai < bi ? -1 : (ai > bi ? 1 : a.name.localeCompare(b.name, 'ko'));
+        }).forEach(pr => {
+          const line = document.createElement('div');
+          line.style.cssText = 'display:flex; align-items:center; gap:8px; padding:4px 0; font-size:12px;';
+          const dot = document.createElement('span');
+          dot.style.cssText = 'width:7px; height:7px; border-radius:50%; flex-shrink:0; background:' + colorFor(pr.name) + ';';
+          line.appendChild(dot);
+          const pn = document.createElement('span');
+          pn.textContent = pr.name;
+          pn.style.cssText = 'flex:1 1 auto; min-width:0; word-break:break-all;' + (pr.finished ? ' color:#aaa;' : '');
+          line.appendChild(pn);
+          if(pr.shared){
+            const sh = document.createElement('span');
+            sh.textContent = '공동';
+            sh.style.cssText = 'font-size:10px; padding:1px 6px; border-radius:20px; background:#eef2ff; color:#3730a3; flex-shrink:0;';
+            line.appendChild(sh);
+          }
+          const dday = document.createElement('span');
+          dday.style.cssText = 'flex:0 0 96px; text-align:right; color:#888;';
+          if(pr.showIso){
+            const d = fromISODate(pr.showIso);
+            const diff = Math.round((d - today) / 86400000);
+            dday.textContent = formatDateShort(d) + ' ' + (diff === 0 ? 'D-DAY' : (diff > 0 ? 'D-' + diff : 'D+' + Math.abs(diff)));
+            if(diff >= 0 && diff <= 7) dday.style.color = '#c0392b';
+          } else {
+            dday.textContent = '공연일 미입력';
+            dday.style.color = '#ccc';
+          }
+          line.appendChild(dday);
+          const st = document.createElement('span');
+          st.style.cssText = 'flex:0 0 84px; text-align:right; color:#666;';
+          st.innerHTML = pr.total === 0 ? '<span style="color:#ccc;">할 일 없음</span>'
+            : ('남은 ' + pr.open + ' / ' + pr.total +
+               (pr.overdue > 0 ? ' <span style="color:#c0392b;">!</span>' : ''));
+          line.appendChild(st);
+          const go = document.createElement('button');
+          go.textContent = '보기';
+          go.title = '이 콘서트의 업무 현황 열기';
+          go.style.cssText = 'font-size:10px; padding:3px 8px; height:auto; flex-shrink:0;';
+          go.onclick = (e) => {
+            e.stopPropagation();
+            close();
+            openProjectHistory(pr.name);
+          };
+          line.appendChild(go);
+          sub.appendChild(line);
+        });
+        row.appendChild(sub);
+      }
+
+      table.appendChild(row);
+    });
+
+    listWrap.appendChild(table);
+  }
+
+  function close(){ if(backdrop.parentNode) document.body.removeChild(backdrop); }
+
+  refresh();
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex; justify-content:flex-end; margin-top:16px;';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'primary';
+  closeBtn.textContent = '닫기';
+  closeBtn.onclick = close;
+  actions.appendChild(closeBtn);
+  box.appendChild(actions);
+
+  backdrop.appendChild(box);
+  backdrop.addEventListener('mousedown', (e) => { if(e.target === backdrop) close(); });
   document.body.appendChild(backdrop);
 }
 
@@ -6272,6 +6548,8 @@ function startApp(){
   initStickyNote();
   const tb = document.getElementById('trashBtn');
   if(tb) tb.onclick = openTrashModal;
+  const olb = document.getElementById('ownerLoadBtn');
+  if(olb) olb.onclick = openOwnerLoad;
   loadData().then(() => {
     try { recoverUnsavedEdits(); } catch(e){}
     try { restoreFromSnapshot(); } catch(e){}
