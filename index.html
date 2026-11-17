@@ -304,7 +304,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-17c';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-17d';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -2867,15 +2867,29 @@ function getOwnerForKnownName(name){
 
 function addProjectToDateGroup(dateGroup, name){
   const owner = getOwnerForKnownName(name);
-  const tempId = 'temp_' + Date.now();
-  const newTask = { id: tempId, date: dateGroup.date, project: name, text: '', assignee: '', deadline: '', done: false, details: '', owner: owner };
-  dateGroup.projects.push({ name: name, tasks: [newTask] });
+  // 그 날짜에 이미 이 콘서트 칸이 있으면 새로 만들지 않고 그 아래에 할 일을 붙임
+  let proj = dateGroup.projects.find(p => p.name === name);
+  if(!proj){
+    proj = { name: name, tasks: [] };
+    dateGroup.projects.push(proj);
+  }
+  const tempId = 'temp_' + Date.now() + '_' + Math.floor(Math.random()*1000);
+  // 내용이 생기기 전에는 시트에 줄을 만들지 않음
+  const newTask = { id: tempId, date: dateGroup.date, project: name, text: '', assignee: '',
+    deadline: '', done: false, details: '', owner: owner, _notCreated: true };
+  proj.tasks.push(newTask);
+
+  requestTaskFocus(name, tempId);
   renderAll();
-  setStatus('저장 중...');
-  apiAdd({ date: dateGroup.date, project: name, text: '', assignee: '', deadline: '', done: false, details: '', owner: owner }).then(r => {
-    newTask.id = r.id;
-    setStatus('동기화됨');
-  });
+
+  // 방금 만든 빈 칸에 바로 쓸 수 있게 커서를 놓아 줌
+  setTimeout(() => {
+    const card = [...document.querySelectorAll('.proj-card')].find(c => c.dataset.proj === name);
+    if(!card) return;
+    const row = card.querySelector('[data-task-id="' + tempId + '"]');
+    const input = row ? row.querySelector('input.task-text') : null;
+    if(input) input.focus();
+  }, 120);
 }
 
 function renameProjectGlobally(oldName, newName){
