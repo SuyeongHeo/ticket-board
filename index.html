@@ -40,9 +40,57 @@
   .sticky-note-close { background: none; border: none; cursor: pointer; font-size: 13px; color: #8a7f3d; padding: 0 2px; height: auto; }
   .sticky-add-btn { background: #fff; border: 1px dashed #d8c97d; color: #8a7f3d; border-radius: 4px; padding: 8px; font-size: 12px; cursor: pointer; flex-shrink: 0; }
   @media (max-width: 1650px) { .sticky-notes-wrap { display: none; } }
-  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-  .topbar-left { display: flex; align-items: center; gap: 10px; }
-  .title { font-size: 18px; font-weight: 600; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 10px; }
+  .topbar-left { display: flex; align-items: baseline; gap: 10px; }
+  .title { font-size: 18px; font-weight: 600; letter-spacing: -0.2px; }
+
+  /* 오른쪽 위: 보기 전환 */
+  .topbar-view { display: flex; align-items: center; gap: 6px; }
+  .btn-view { font-weight: 500; }
+  .btn-today { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .btn-today:hover { background: #333; }
+
+  /* 도구 줄 */
+  .toolbar {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    margin-bottom: 18px; padding: 6px;
+    background: #f7f6f2; border: 1px solid #e8e6e0; border-radius: 12px;
+  }
+  .tool-group { display: flex; align-items: center; gap: 4px; }
+  .tool-group button {
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    padding: 7px 11px; font-size: 13px; color: #45433e; white-space: nowrap;
+  }
+  .tool-group button:hover { background: #fff; border-color: #e3e1da; color: #1a1a1a; }
+  .tool-div { width: 1px; height: 18px; background: #e0ded7; flex-shrink: 0; margin: 0 2px; }
+  .tool-spacer { flex: 1 1 auto; min-width: 8px; }
+  .tool-count {
+    display: inline-block; margin-left: 5px; padding: 0 6px;
+    font-size: 11px; font-weight: 700; line-height: 17px;
+    background: #e5e3dc; color: #6b6861; border-radius: 20px;
+  }
+  .tool-group button.is-on {
+    background: #fff; border-color: #cfd8ea; color: #2563eb; font-weight: 600;
+  }
+  .btn-filter.is-filtered { background: #eef2ff; border-color: #c7d2fe; color: #3730a3; font-weight: 600; }
+
+  /* 검색 */
+  .search-wrap { position: relative; display: flex; align-items: center; }
+  .search-icon {
+    position: absolute; left: 10px; width: 15px; height: 15px; pointer-events: none;
+    fill: none; stroke: #a8a49b; stroke-width: 2; stroke-linecap: round;
+  }
+  #searchInput {
+    width: 190px; height: 34px; padding: 0 12px 0 31px; font-size: 13px;
+    background: #fff; border: 1px solid #e3e1da; border-radius: 8px; color: #1a1a1a;
+  }
+  #searchInput::placeholder { color: #aaa59c; }
+  #searchInput:focus { outline: none; border-color: #b9c6e4; box-shadow: 0 0 0 3px rgba(37,99,235,0.08); }
+  #searchResults {
+    position: absolute; top: 40px; right: 0; width: 320px; max-height: 360px; overflow-y: auto;
+    background: #fff; border: 1px solid #d8d6cf; border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.10); z-index: 20;
+  }
   .sync-status { font-size: 12px; color: #888; }
   button, input, textarea, select {
     font-family: inherit;
@@ -183,11 +231,17 @@
     body { padding: 12px 10px; }
     .wrap { max-width: 100%; }
 
-    /* 상단 버튼 — 두 줄로 접히고 손가락으로 누르기 좋은 크기 */
+    /* 상단 버튼 — 접히고 손가락으로 누르기 좋은 크기 */
     .topbar { gap: 8px; }
     .topbar-left { width: 100%; }
-    .topbar > div:last-child { width: 100%; flex-wrap: wrap; }
-    .topbar > div:last-child button { flex: 1 1 auto; min-height: 40px; padding: 8px 10px; font-size: 12.5px; }
+    .topbar-view { width: 100%; }
+    .topbar-view button { flex: 1 1 auto; min-height: 40px; }
+    .toolbar { gap: 4px; padding: 6px; }
+    .tool-group { flex: 1 1 100%; }
+    .tool-group button { flex: 1 1 auto; min-height: 40px; padding: 8px 8px; font-size: 12.5px; background: #fff; border-color: #e3e1da; }
+    .tool-div { display: none; }
+    .tool-spacer { display: none; }
+    .search-wrap { width: 100%; }
     #searchInput { flex: 1 1 100%; width: 100% !important; height: 40px !important; font-size: 15px !important; }
     #searchResults { width: 100% !important; left: 0; right: 0; }
 
@@ -262,19 +316,34 @@
       <span class="sync-status" id="syncStatus"></span>
       <span class="sync-status" id="appVersion" style="opacity:0.5;"></span>
     </div>
-    <div style="display:flex; gap:8px; align-items:center; position:relative;">
-      <button id="projHistBtn" title="콘서트를 골라서 완료/미완료 업무를 한 번에 보기">📋 콘서트별 업무 현황</button>
-      <button id="ownerLoadBtn" title="담당자별로 콘서트가 몇 개씩인지 보기">👥 담당자별 현황</button>
+    <div class="topbar-view">
+      <button id="weeklyToggleBtn" class="btn-view">주간 보기</button>
+      <button id="todayBtn" class="btn-view btn-today">오늘</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="tool-group">
+      <button id="projHistBtn" title="콘서트를 골라서 완료/미완료 업무를 한 번에 보기">콘서트별 현황</button>
+      <button id="ownerLoadBtn" title="담당자별로 콘서트가 몇 개씩인지 보기">담당자별 현황</button>
+    </div>
+    <span class="tool-div"></span>
+    <div class="tool-group">
       <button id="rolloverBtn" title="어제 미완료 할 일을 오늘로 옮기기">어제 미완료 가져오기</button>
-      <button id="stickyNoteToggleBtn">메모</button>
-      <button id="trashBtn" title="지운 할 일 되살리기">🗑 휴지통</button>
-      <button id="ownerBtn">내 이름 설정</button>
-      <button id="manageOwnersBtn">담당자 관리</button>
-      <button id="viewFilterBtn">전체보기</button>
-      <input id="searchInput" type="text" placeholder="할 일 검색" style="font-size:13px; height:34px; padding:0 12px; border:1px solid #d8d6cf; border-radius:8px; width:160px;">
-      <div id="searchResults" style="display:none; position:absolute; top:40px; right:0; width:320px; max-height:360px; overflow-y:auto; background:#fff; border:1px solid #d8d6cf; border-radius:10px; box-shadow:0 4px 14px rgba(0,0,0,0.08); z-index:20;"></div>
-      <button id="weeklyToggleBtn">주간 보기</button>
-      <button id="todayBtn">오늘</button>
+      <button id="stickyNoteToggleBtn" title="내 메모 열고 닫기">메모</button>
+      <button id="trashBtn" title="지운 할 일 되살리기">휴지통</button>
+    </div>
+    <span class="tool-div"></span>
+    <div class="tool-group">
+      <button id="ownerBtn" title="내 이름 설정">내 이름 설정</button>
+      <button id="manageOwnersBtn" title="담당자 이름과 팀 관리">담당자 관리</button>
+      <button id="viewFilterBtn" class="btn-filter" title="보이는 범위 고르기">전체보기</button>
+    </div>
+    <div class="tool-spacer"></div>
+    <div class="search-wrap">
+      <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line></svg>
+      <input id="searchInput" type="text" placeholder="할 일 검색" autocomplete="off" autocorrect="off" spellcheck="false">
+      <div id="searchResults" style="display:none;"></div>
     </div>
   </div>
   <div class="setup-note" id="setupNote" style="display:none;">
@@ -304,7 +373,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-17d';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-19b';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -932,7 +1001,9 @@ function updateTrashButton(){
   const btn = document.getElementById('trashBtn');
   if(!btn) return;
   pruneTrash();
-  btn.textContent = taskTrash.length > 0 ? ('🗑 휴지통 ' + taskTrash.length) : '🗑 휴지통';
+  btn.innerHTML = taskTrash.length > 0
+    ? ('휴지통<span class="tool-count">' + taskTrash.length + '</span>')
+    : '휴지통';
 }
 
 function restoreTrashEntry(entry){
@@ -6177,9 +6248,11 @@ function updateOwnerUI(){
   else if(filterMode === 'team' && currentTeamFilter) viewFilterBtn.textContent = '팀: ' + currentTeamFilter;
   else if(filterMode === 'tag' && currentTagFilter) viewFilterBtn.textContent = '#' + currentTagFilter;
   else viewFilterBtn.textContent = '내 업무만';
+  viewFilterBtn.classList.toggle('is-filtered', filterMode !== 'all');
 
   const weeklyBtn = document.getElementById('weeklyToggleBtn');
   weeklyBtn.textContent = weeklyViewOpen ? '일간 보기' : '주간 보기';
+  weeklyBtn.title = weeklyViewOpen ? '하루씩 보기로 돌아가기' : '한 주를 펼쳐서 보기';
 }
 
 /* ───────── 주간보기·검색에서 넘어올 때 그 할 일이 바로 보이게 ─────────
@@ -6292,6 +6365,10 @@ document.getElementById('rolloverBtn').onclick = () => { rolloverIncompleteTasks
 document.getElementById('todayBtn').onclick = () => { selectedDate = new Date(); ensureGroupForSelectedDate(); renderAll(); };
 
 const searchInputEl = document.getElementById('searchInput');
+// 새로고침하면 브라우저가 지난번 검색어를 다시 채워 넣는데, 검색은 실행되지 않아
+// 글자만 덩그러니 남는다. 시작할 때 비워 둔다.
+searchInputEl.value = '';
+window.addEventListener('pageshow', () => { searchInputEl.value = ''; });
 searchInputEl.addEventListener('input', () => { renderSearchResults(searchInputEl.value); });
 searchInputEl.addEventListener('focus', () => { if(searchInputEl.value.trim()) renderSearchResults(searchInputEl.value); });
 document.addEventListener('click', (e) => {
@@ -6625,6 +6702,7 @@ function initStickyNote(){
     }
     stickyNotesVisible = !stickyNotesVisible;
     try { localStorage.setItem('boardStickyNoteVisible', stickyNotesVisible ? '1' : '0'); } catch(e){}
+    document.getElementById('stickyNoteToggleBtn').classList.toggle('is-on', stickyNotesVisible);
     renderStickyNotes();
   };
 
@@ -6641,6 +6719,8 @@ function startApp(){
   if(tb) tb.onclick = openTrashModal;
   const olb = document.getElementById('ownerLoadBtn');
   if(olb) olb.onclick = openOwnerLoad;
+  const snb = document.getElementById('stickyNoteToggleBtn');
+  if(snb) snb.classList.toggle('is-on', !!stickyNotesVisible);
   loadData().then(() => {
     try { recoverUnsavedEdits(); } catch(e){}
     try { restoreFromSnapshot(); } catch(e){}
