@@ -82,6 +82,16 @@
   }
   .btn-filter.is-filtered { background: #eef2ff; border-color: #c7d2fe; color: #3730a3; font-weight: 600; }
 
+  /* 할 일 기한 칩 */
+  .due-chip {
+    flex-shrink: 0; font-size: 11px; line-height: 1; font-weight: 600;
+    padding: 5px 8px; border-radius: 20px; border: 1px solid transparent;
+    white-space: nowrap; cursor: pointer;
+  }
+  .due-chip.due-empty { background: transparent; color: #cbc8c1; font-weight: 500; }
+  .task-row:hover .due-chip.due-empty { color: #8d8980; background: #f3f2ee; }
+  .due-chip.due-empty:hover { color: #1a1a1a !important; background: #eceae4 !important; }
+
   /* 새 버전 알림 */
   .update-bar {
     position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
@@ -407,7 +417,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-24b';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-24d';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -784,7 +794,9 @@ function countProjectPending(projName){
         if(!t.text || !String(t.text).trim()) return;
         if(t.done) return;
         pending++;
-        if(parseDateLabel(g.date) < today) overdue++;
+        const due = getDue(t);
+        const ref = due ? fromISODate(due) : parseDateLabel(g.date);
+        if(ref && ref < today) overdue++;
       });
     });
   });
@@ -1224,7 +1236,10 @@ function collectOwnerLoad(includeDone){
           if(t.done) done++;
           else {
             open++;
-            if(gd && gd < today) overdue++;
+            // 기한을 정해 뒀으면 그 날짜로, 아니면 할 일이 놓인 날짜로 판단
+            const due = getDue(t);
+            const ref = due ? fromISODate(due) : gd;
+            if(ref && ref < today) overdue++;
           }
         });
       });
@@ -2531,13 +2546,24 @@ function renderWeekly(){
           line.style.background = accentColor + '22';
           line.style.borderLeft = '3px solid ' + accentColor;
           if(task.done){ line.style.textDecoration = 'line-through'; line.style.opacity = '0.55'; }
+          const wDue = getDue(task);
+          const wDueHtml = wDue
+            ? '<span style="display:inline-block; font-size:9px; font-weight:700; padding:0 5px; border-radius:20px; margin-left:4px; vertical-align:1px; background:' +
+                dueChipColors(wDue, task.done).bg + '; color:' + dueChipColors(wDue, task.done).fg + ';">' +
+                dueShortLabel(wDue) + '</span>'
+            : '';
           if(task.tag){
             const tagColor = ownerColorFor(task.tag);
-            line.innerHTML = '<span style="display:inline-block; font-size:9px; padding:0 5px; border-radius:20px; background:' + tagColor + '33; color:' + tagColor + '; margin-right:4px;">' + task.tag + '</span>' + (task.text || '(내용 없음)');
+            line.innerHTML = '<span style="display:inline-block; font-size:9px; padding:0 5px; border-radius:20px; background:' + tagColor + '33; color:' + tagColor + '; margin-right:4px;">' + task.tag + '</span>' + escapeHtml(task.text || '(내용 없음)') + wDueHtml;
+          } else if(wDue){
+            line.innerHTML = escapeHtml(task.text || '(내용 없음)') + wDueHtml;
           } else {
             line.textContent = task.text || '(내용 없음)';
           }
-          line.title = (task.text || '(내용 없음)') + ' - 끌어서 다른 날짜로 옮길 수 있어요';
+          // 기한이 지난 미완료는 왼쪽 띠를 빨갛게 해서 멀리서도 보이게
+          if(wDue && !task.done && dueDaysLeft(wDue) < 0) line.style.borderLeft = '3px solid #c0392b';
+          line.title = (task.text || '(내용 없음)') +
+            (wDue ? ' · 기한 ' + dueChipText(wDue) : '') + ' - 끌어서 다른 날짜로 옮길 수 있어요';
           line.draggable = true;
           line.addEventListener('dragstart', (e) => {
             draggedWeeklyTask = task;
@@ -3744,6 +3770,14 @@ function openProjectHistory(projName){
     line.style.cssText = 'word-break:break-all; font-weight:600;' +
       (t.done ? ' color:#6b7280; font-weight:500;' : '');
     textWrap.appendChild(line);
+    const dueIsoH = getDue(t);
+    if(dueIsoH){
+      const c = dueChipColors(dueIsoH, t.done);
+      const dc = document.createElement('span');
+      dc.textContent = dueChipText(dueIsoH);
+      dc.style.cssText = 'display:inline-block; margin:3px 4px 0 0; font-size:9.5px; font-weight:600; padding:1px 6px; border-radius:20px; background:' + c.bg + '; color:' + c.fg + ';';
+      textWrap.appendChild(dc);
+    }
     if(t.tag){
       const tag = document.createElement('span');
       tag.textContent = '#' + t.tag;
@@ -6041,12 +6075,36 @@ function renderLeft(){
         trashTasks([task]);
       };
 
+      const dueIso = getDue(task);
+      const dueBtn = document.createElement('button');
+      if(dueIso){
+        const c = dueChipColors(dueIso, task.done);
+        dueBtn.className = 'due-chip';
+        dueBtn.textContent = dueChipText(dueIso);
+        dueBtn.style.cssText = 'background:' + c.bg + '; color:' + c.fg + '; border-color:' + c.bd + ';';
+        dueBtn.title = '기한 ' + dueIso + ' — 눌러서 바꾸기';
+      } else {
+        dueBtn.className = 'due-chip due-empty';
+        dueBtn.textContent = '기한';
+        dueBtn.title = '언제까지 끝낼지 정하기';
+      }
+      dueBtn.onclick = () => { openDuePicker(dueBtn, task); };
+
       row.appendChild(check);
       row.appendChild(textInput);
+      if(!dueIso) row.appendChild(dueBtn);   // 기한 없을 땐 작은 버튼만 제목 옆에
       row.appendChild(tagBtn);
       row.appendChild(copyBtn);
       row.appendChild(moveBtn);
       row.appendChild(delBtn);
+      // 기한이 있으면 제목 아래 줄에 칩으로 (제목 길이를 줄이지 않도록)
+      if(dueIso){
+        const dueLine = document.createElement('div');
+        dueLine.style.cssText = 'flex:1 1 100%; margin-left:24px; margin-top:3px;';
+        dueBtn.style.cssText += ' padding:3px 9px;';
+        dueLine.appendChild(dueBtn);
+        row.appendChild(dueLine);
+      }
       row.appendChild(detailsInput);
       projWrap.appendChild(row);
     });
@@ -6287,6 +6345,122 @@ function updateOwnerUI(){
   const weeklyBtn = document.getElementById('weeklyToggleBtn');
   weeklyBtn.textContent = weeklyViewOpen ? '일간 보기' : '주간 보기';
   weeklyBtn.title = weeklyViewOpen ? '하루씩 보기로 돌아가기' : '한 주를 펼쳐서 보기';
+}
+
+/* ═══════════ 할 일 기한 ═══════════
+   "언제까지 끝내야 하는가". 할 일이 놓인 날짜와 별개로 둘 수 있다.
+   시트에서 안 쓰던 칸(E열)에 'YYYY-MM-DD'로 저장해서 재배포가 필요 없다. */
+function getDue(task){
+  const v = String((task && task.assignee) || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
+}
+
+/* 기한까지 며칠 남았는지. 지났으면 음수, 오늘이면 0 */
+function dueDaysLeft(iso){
+  if(!iso) return null;
+  const d = fromISODate(iso); d.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  return Math.round((d - today) / 86400000);
+}
+
+/* 주간보기처럼 좁은 곳에 쓰는 짧은 표기 */
+function dueShortLabel(iso){
+  const n = dueDaysLeft(iso);
+  if(n === null) return '';
+  if(n < 0) return '지남';
+  if(n === 0) return '오늘';
+  if(n === 1) return '내일';
+  return 'D-' + n;
+}
+
+function dueChipText(iso){
+  const n = dueDaysLeft(iso);
+  const d = fromISODate(iso);
+  const base = '~' + (d.getMonth()+1) + '/' + d.getDate();
+  if(n === null) return base;
+  if(n < 0) return base + ' ' + Math.abs(n) + '일 지남';
+  if(n === 0) return base + ' 오늘';
+  if(n === 1) return base + ' 내일';
+  return base + ' D-' + n;
+}
+
+/* 지남 → 빨강, 오늘·내일 → 주황, 그 밖 → 회색 */
+function dueChipColors(iso, done){
+  if(done) return { bg:'#f3f2ee', fg:'#aaa6a0', bd:'transparent' };
+  const n = dueDaysLeft(iso);
+  if(n === null) return { bg:'#f0efea', fg:'#6b6861', bd:'transparent' };
+  if(n < 0) return { bg:'#fdecec', fg:'#c0392b', bd:'#f3cfcf' };
+  if(n <= 1) return { bg:'#fff7de', fg:'#9b7821', bd:'#efe0b4' };
+  if(n <= 3) return { bg:'#fff7de', fg:'#9b7821', bd:'transparent' };
+  return { bg:'#f0efea', fg:'#6b6861', bd:'transparent' };
+}
+
+function setTaskDue(task, iso){
+  task.assignee = iso || '';
+  queueTaskSave(task, { assignee: task.assignee });
+  renderAll();
+}
+
+/* 기한 고르는 작은 패널 */
+function openDuePicker(anchorEl, task){
+  const rect = anchorEl.getBoundingClientRect();
+  const panel = document.createElement('div');
+  panel.style.cssText = 'position:fixed; width:230px; background:#fff; border:1px solid #d8d6cf; border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,0.12); z-index:999; padding:12px;';
+
+  const title = document.createElement('div');
+  title.textContent = '언제까지';
+  title.style.cssText = 'font-size:12px; font-weight:700; color:#444; margin-bottom:8px;';
+  panel.appendChild(title);
+
+  const quick = document.createElement('div');
+  quick.style.cssText = 'display:flex; flex-wrap:wrap; gap:5px; margin-bottom:9px;';
+  const today = new Date(); today.setHours(0,0,0,0);
+  const mk = (label, days) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = 'font-size:11.5px; padding:5px 9px; height:auto; border-radius:20px;';
+    b.onclick = () => {
+      const d = new Date(today.getTime());
+      d.setDate(d.getDate() + days);
+      setTaskDue(task, toISODate(d));
+      cleanup();
+    };
+    return b;
+  };
+  quick.appendChild(mk('오늘', 0));
+  quick.appendChild(mk('내일', 1));
+  quick.appendChild(mk('모레', 2));
+  // 이번 주 금요일 (이미 지났으면 다음 주)
+  const toFri = (5 - today.getDay() + 7) % 7 || 7;
+  quick.appendChild(mk('금요일', toFri));
+  quick.appendChild(mk('일주일', 7));
+  panel.appendChild(quick);
+
+  const dIn = document.createElement('input');
+  dIn.type = 'date';
+  dIn.className = 'modal-input';
+  dIn.style.cssText = 'width:100%; box-sizing:border-box; font-size:13px; padding:7px 9px;';
+  dIn.value = getDue(task);
+  dIn.onchange = () => { if(dIn.value){ setTaskDue(task, dIn.value); cleanup(); } };
+  panel.appendChild(dIn);
+
+  if(getDue(task)){
+    const clear = document.createElement('button');
+    clear.textContent = '기한 지우기';
+    clear.style.cssText = 'width:100%; margin-top:8px; font-size:12px; padding:6px; height:auto; color:#c0392b;';
+    clear.onclick = () => { setTaskDue(task, ''); cleanup(); };
+    panel.appendChild(clear);
+  }
+
+  document.body.appendChild(panel);
+  positionPanelNearAnchor(panel, rect);
+
+  const cleanup = () => {
+    document.removeEventListener('mousedown', outside, true);
+    if(panel.parentNode) panel.parentNode.removeChild(panel);
+  };
+  const outside = (e) => { if(!panel.contains(e.target) && e.target !== anchorEl) cleanup(); };
+  setTimeout(() => { document.addEventListener('mousedown', outside, true); }, 0);
 }
 
 /* ═══════════ 새 버전 확인 ═══════════
