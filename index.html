@@ -417,7 +417,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-24d';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-24e';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -2326,10 +2326,9 @@ function moveTaskToDateAndProject(task, newDateLabel, newProjectName){
   if(task.category && task.endDate){ task.endDate = newEndDateLabel; }
   targetProj.tasks.push(task);
 
-  setStatus('이동 중...');
-  const patch = { id: task.id, date: newDateLabel, project: newProjectName };
+  const patch = { date: newDateLabel, project: newProjectName };
   if(task.category && task.endDate){ patch.endDate = newEndDateLabel; }
-  apiUpdate(patch).then(() => setStatus('동기화됨'));
+  queueTaskSave(task, patch);   // 실패해도 다시 시도하도록 저장 큐를 거침
 }
 
 function getWeekDates(centerDate){
@@ -2547,23 +2546,27 @@ function renderWeekly(){
           line.style.borderLeft = '3px solid ' + accentColor;
           if(task.done){ line.style.textDecoration = 'line-through'; line.style.opacity = '0.55'; }
           const wDue = getDue(task);
-          const wDueHtml = wDue
+          const wLabel = wDue ? dueShortLabel(task) : '';
+          const wc = wLabel ? dueChipColors(task) : null;
+          const wDueHtml = wLabel
             ? '<span style="display:inline-block; font-size:9px; font-weight:700; padding:0 5px; border-radius:20px; margin-left:4px; vertical-align:1px; background:' +
-                dueChipColors(wDue, task.done).bg + '; color:' + dueChipColors(wDue, task.done).fg + ';">' +
-                dueShortLabel(wDue) + '</span>'
+                wc.bg + '; color:' + wc.fg + ';">' + wLabel + '</span>'
             : '';
           if(task.tag){
             const tagColor = ownerColorFor(task.tag);
             line.innerHTML = '<span style="display:inline-block; font-size:9px; padding:0 5px; border-radius:20px; background:' + tagColor + '33; color:' + tagColor + '; margin-right:4px;">' + task.tag + '</span>' + escapeHtml(task.text || '(내용 없음)') + wDueHtml;
-          } else if(wDue){
+          } else if(wLabel){
             line.innerHTML = escapeHtml(task.text || '(내용 없음)') + wDueHtml;
           } else {
             line.textContent = task.text || '(내용 없음)';
           }
           // 기한이 지난 미완료는 왼쪽 띠를 빨갛게 해서 멀리서도 보이게
-          if(wDue && !task.done && dueDaysLeft(wDue) < 0) line.style.borderLeft = '3px solid #c0392b';
+          if(wDue){
+            const wst = dueState(task);
+            if(wst && !task.done && (wst.late || wst.gap < 0)) line.style.borderLeft = '3px solid #c0392b';
+          }
           line.title = (task.text || '(내용 없음)') +
-            (wDue ? ' · 기한 ' + dueChipText(wDue) : '') + ' - 끌어서 다른 날짜로 옮길 수 있어요';
+            (wDue ? ' · 기한 ' + dueChipText(task) : '') + ' - 끌어서 다른 날짜로 옮길 수 있어요';
           line.draggable = true;
           line.addEventListener('dragstart', (e) => {
             draggedWeeklyTask = task;
@@ -3772,9 +3775,9 @@ function openProjectHistory(projName){
     textWrap.appendChild(line);
     const dueIsoH = getDue(t);
     if(dueIsoH){
-      const c = dueChipColors(dueIsoH, t.done);
+      const c = dueChipColors(t);
       const dc = document.createElement('span');
-      dc.textContent = dueChipText(dueIsoH);
+      dc.textContent = dueChipText(t);
       dc.style.cssText = 'display:inline-block; margin:3px 4px 0 0; font-size:9.5px; font-weight:600; padding:1px 6px; border-radius:20px; background:' + c.bg + '; color:' + c.fg + ';';
       textWrap.appendChild(dc);
     }
@@ -6078,9 +6081,9 @@ function renderLeft(){
       const dueIso = getDue(task);
       const dueBtn = document.createElement('button');
       if(dueIso){
-        const c = dueChipColors(dueIso, task.done);
+        const c = dueChipColors(task);
         dueBtn.className = 'due-chip';
-        dueBtn.textContent = dueChipText(dueIso);
+        dueBtn.textContent = dueChipText(task);
         dueBtn.style.cssText = 'background:' + c.bg + '; color:' + c.fg + '; border-color:' + c.bd + ';';
         dueBtn.title = '기한 ' + dueIso + ' — 눌러서 바꾸기';
       } else {
@@ -6355,7 +6358,7 @@ function getDue(task){
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
 }
 
-/* 기한까지 며칠 남았는지. 지났으면 음수, 오늘이면 0 */
+/* 기한까지 며칠 남았는지 (오늘 기준). 지났으면 음수 */
 function dueDaysLeft(iso){
   if(!iso) return null;
   const d = fromISODate(iso); d.setHours(0,0,0,0);
@@ -6363,35 +6366,69 @@ function dueDaysLeft(iso){
   return Math.round((d - today) / 86400000);
 }
 
-/* 주간보기처럼 좁은 곳에 쓰는 짧은 표기 */
-function dueShortLabel(iso){
-  const n = dueDaysLeft(iso);
-  if(n === null) return '';
-  if(n < 0) return '지남';
-  if(n === 0) return '오늘';
-  if(n === 1) return '내일';
-  return 'D-' + n;
+/* 할 일이 놓인 날짜에서 기한까지 며칠.
+   주간보기에서 할 일을 옮기면 이 값이 바뀌므로 여유가 얼마나 남았는지 바로 보인다. */
+function dueGap(iso, taskDateLabel){
+  if(!iso) return null;
+  const d = fromISODate(iso); d.setHours(0,0,0,0);
+  let base;
+  if(taskDateLabel){ base = parseDateLabel(taskDateLabel); }
+  if(!base || isNaN(base)){ base = new Date(); }
+  base.setHours(0,0,0,0);
+  return Math.round((d - base) / 86400000);
 }
 
-function dueChipText(iso){
-  const n = dueDaysLeft(iso);
-  const d = fromISODate(iso);
+function isTodayLabel(dateLabel){
+  const d = parseDateLabel(dateLabel);
+  if(!d || isNaN(d)) return false;
+  const today = new Date();
+  return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+}
+
+/* 기한 상태 한 번에 계산
+   late  : 오늘 기준으로 기한이 이미 지남 (어디로 옮겨도 경고)
+   gap   : 할 일이 놓인 날짜에서 기한까지 남은 날 */
+function dueState(task){
+  const iso = getDue(task);
+  if(!iso) return null;
+  const late = !task.done && dueDaysLeft(iso) < 0;
+  return { iso: iso, late: late, gap: dueGap(iso, task.date), done: !!task.done };
+}
+
+/* 좁은 곳(주간보기)용 짧은 표기 */
+function dueShortLabel(task){
+  const st = dueState(task);
+  if(!st) return '';
+  if(st.done) return '';            // 끝난 일은 주간보기에서 조용히
+  if(st.late) return '지남';
+  if(st.gap < 0) return '기한 넘김';
+  if(st.gap === 0) return isTodayLabel(task.date) ? '오늘' : '당일';
+  if(st.gap === 1) return 'D-1';
+  return 'D-' + st.gap;
+}
+
+/* 넓은 곳(일간보기·콘서트별 현황)용 표기 */
+function dueChipText(task){
+  const st = dueState(task);
+  if(!st) return '';
+  const d = fromISODate(st.iso);
   const base = '~' + (d.getMonth()+1) + '/' + d.getDate();
-  if(n === null) return base;
-  if(n < 0) return base + ' ' + Math.abs(n) + '일 지남';
-  if(n === 0) return base + ' 오늘';
-  if(n === 1) return base + ' 내일';
-  return base + ' D-' + n;
+  if(st.done) return base;          // 끝난 일은 날짜만 (지났다고 타박하지 않게)
+  if(st.late) return base + ' ' + Math.abs(dueDaysLeft(st.iso)) + '일 지남';
+  if(st.gap < 0) return base + ' 기한 넘김';
+  if(st.gap === 0) return base + (isTodayLabel(task.date) ? ' 오늘' : ' 당일');
+  if(st.gap === 1) return base + ' D-1';
+  return base + ' D-' + st.gap;
 }
 
-/* 지남 → 빨강, 오늘·내일 → 주황, 그 밖 → 회색 */
-function dueChipColors(iso, done){
-  if(done) return { bg:'#f3f2ee', fg:'#aaa6a0', bd:'transparent' };
-  const n = dueDaysLeft(iso);
-  if(n === null) return { bg:'#f0efea', fg:'#6b6861', bd:'transparent' };
-  if(n < 0) return { bg:'#fdecec', fg:'#c0392b', bd:'#f3cfcf' };
-  if(n <= 1) return { bg:'#fff7de', fg:'#9b7821', bd:'#efe0b4' };
-  if(n <= 3) return { bg:'#fff7de', fg:'#9b7821', bd:'transparent' };
+/* 지남·넘김 → 빨강, 당일·하루 전 → 주황, 그 밖 → 회색 */
+function dueChipColors(task){
+  const st = dueState(task);
+  if(!st) return { bg:'#f0efea', fg:'#6b6861', bd:'transparent' };
+  if(st.done) return { bg:'#f3f2ee', fg:'#aaa6a0', bd:'transparent' };
+  if(st.late || st.gap < 0) return { bg:'#fdecec', fg:'#c0392b', bd:'#f3cfcf' };
+  if(st.gap <= 1) return { bg:'#fff7de', fg:'#9b7821', bd:'#efe0b4' };
+  if(st.gap <= 3) return { bg:'#fff7de', fg:'#9b7821', bd:'transparent' };
   return { bg:'#f0efea', fg:'#6b6861', bd:'transparent' };
 }
 
