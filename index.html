@@ -63,6 +63,14 @@
   }
   .tool-group button:hover { background: #fff; border-color: #e3e1da; color: #1a1a1a; }
   .tool-div { width: 1px; height: 18px; background: #e0ded7; flex-shrink: 0; margin: 0 2px; }
+  .tool-link {
+    display: inline-flex; align-items: center; gap: 3px;
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    padding: 7px 10px 7px 11px; font-size: 13px; color: #45433e;
+    text-decoration: none; white-space: nowrap; cursor: pointer;
+  }
+  .tool-link:hover { background: #fff; border-color: #e3e1da; color: #1a1a1a; }
+  .ext-icon { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0.55; }
   .tool-spacer { flex: 1 1 auto; min-width: 8px; }
   .tool-count {
     display: inline-block; margin-left: 5px; padding: 0 6px;
@@ -73,6 +81,27 @@
     background: #fff; border-color: #cfd8ea; color: #2563eb; font-weight: 600;
   }
   .btn-filter.is-filtered { background: #eef2ff; border-color: #c7d2fe; color: #3730a3; font-weight: 600; }
+
+  /* 새 버전 알림 */
+  .update-bar {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 12px; z-index: 100000;
+    background: #1a1a1a; color: #fff; padding: 12px 14px 12px 18px;
+    border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+    font-size: 13px; line-height: 1.5; max-width: calc(100vw - 32px);
+  }
+  .update-bar b { font-weight: 700; }
+  .update-bar .ub-sub { display: block; font-size: 11px; color: #b9b7b1; margin-top: 2px; }
+  .update-bar button { height: auto; padding: 7px 13px; font-size: 12.5px; border-radius: 8px; white-space: nowrap; }
+  .update-bar .ub-go { background: #fff; border-color: #fff; color: #1a1a1a; font-weight: 700; }
+  .update-bar .ub-go:hover { background: #ececec; }
+  .update-bar .ub-later { background: transparent; border-color: #4a4a4a; color: #cfcdc8; }
+  .update-bar .ub-later:hover { background: #2c2c2c; }
+  @media (max-width: 520px) {
+    .update-bar { left: 12px; right: 12px; transform: none; flex-wrap: wrap; }
+    .update-bar .ub-text { flex: 1 1 100%; }
+    .update-bar button { flex: 1 1 auto; min-height: 38px; }
+  }
 
   /* 검색 */
   .search-wrap { position: relative; display: flex; align-items: center; }
@@ -238,7 +267,8 @@
     .topbar-view button { flex: 1 1 auto; min-height: 40px; }
     .toolbar { gap: 4px; padding: 6px; }
     .tool-group { flex: 1 1 100%; }
-    .tool-group button { flex: 1 1 auto; min-height: 40px; padding: 8px 8px; font-size: 12.5px; background: #fff; border-color: #e3e1da; }
+    .tool-group button,
+    .tool-group .tool-link { flex: 1 1 auto; min-height: 40px; padding: 8px 8px; font-size: 12.5px; background: #fff; border-color: #e3e1da; justify-content: center; }
     .tool-div { display: none; }
     .tool-spacer { display: none; }
     .search-wrap { width: 100%; }
@@ -339,6 +369,10 @@
       <button id="manageOwnersBtn" title="담당자 이름과 팀 관리">담당자 관리</button>
       <button id="viewFilterBtn" class="btn-filter" title="보이는 범위 고르기">전체보기</button>
     </div>
+    <span class="tool-div"></span>
+    <div class="tool-group">
+      <a id="toolBoardLink" class="tool-link" href="https://claude.ai/artifact/R5mczfsUHSKBaMJtGXReVq" target="_blank" rel="noopener noreferrer" title="쏠드아웃 업무 툴보드 새 탭으로 열기">업무 툴보드<svg class="ext-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 16 16 8"></path><path d="M9 8h7v7"></path></svg></a>
+    </div>
     <div class="tool-spacer"></div>
     <div class="search-wrap">
       <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line></svg>
@@ -373,7 +407,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-19b';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-24b';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -6255,6 +6289,73 @@ function updateOwnerUI(){
   weeklyBtn.title = weeklyViewOpen ? '하루씩 보기로 돌아가기' : '한 주를 펼쳐서 보기';
 }
 
+/* ═══════════ 새 버전 확인 ═══════════
+   깃허브 페이지는 파일을 한동안 브라우저에 저장해 둬서, 새로 올려도 바로 안 바뀐다.
+   그래서 페이지가 스스로 서버의 최신본을 확인하고, 다르면 알려 준 뒤
+   버튼 한 번으로 최신 화면을 가져온다. (주소 뒤에 표시를 붙여 저장본을 피해 감) */
+let updateNoticeShown = false;
+
+async function fetchLatestVersion(){
+  const res = await fetch(location.pathname + '?_v=' + Date.now(), { cache: 'no-store' });
+  if(!res.ok) return null;
+  const text = await res.text();
+  const m = text.match(/const APP_VERSION = '([^']+)'/);
+  return m ? m[1] : null;
+}
+
+async function checkForUpdate(){
+  if(updateNoticeShown) return;
+  try {
+    const latest = await fetchLatestVersion();
+    if(!latest || latest === APP_VERSION) return;
+    if(latest < APP_VERSION) return;      // 내 쪽이 더 새 버전이면 그냥 둠
+    showUpdateBar(latest);
+  } catch(e){ /* 인터넷 문제면 다음 차례에 다시 */ }
+}
+
+function showUpdateBar(latest){
+  if(updateNoticeShown || document.getElementById('updateBar')) return;
+  updateNoticeShown = true;
+
+  // 이미 캐시 우회 주소로 들어왔는데도 옛 버전이면 자동 새로고침이 소용없음
+  const already = new URLSearchParams(location.search).get('v');
+  const autoWorks = (already !== latest);
+
+  const bar = document.createElement('div');
+  bar.id = 'updateBar';
+  bar.className = 'update-bar';
+
+  const txt = document.createElement('div');
+  txt.className = 'ub-text';
+  txt.innerHTML = '<b>새 버전이 올라왔어요</b>' +
+    '<span class="ub-sub">' + (autoWorks
+      ? ('v' + escapeHtml(APP_VERSION) + ' → v' + escapeHtml(latest))
+      : ('키보드로 ' + (navigator.platform.indexOf('Mac') === 0 ? 'Command + Shift + R' : 'Ctrl + F5'))) +
+    '</span>';
+  bar.appendChild(txt);
+
+  const later = document.createElement('button');
+  later.className = 'ub-later';
+  later.textContent = '나중에';
+  later.onclick = () => { if(bar.parentNode) bar.parentNode.removeChild(bar); };
+  bar.appendChild(later);
+
+  if(autoWorks){
+    const go = document.createElement('button');
+    go.className = 'ub-go';
+    go.textContent = '지금 적용';
+    go.onclick = () => {
+      if(saveQueue.length > 0 || pendingAddCount > 0){
+        if(!confirm('아직 저장 중인 내용이 있어요. 그래도 새로고침할까요?')) return;
+      }
+      location.replace(location.pathname + '?v=' + encodeURIComponent(latest));
+    };
+    bar.appendChild(go);
+  }
+
+  document.body.appendChild(bar);
+}
+
 /* ───────── 주간보기·검색에서 넘어올 때 그 할 일이 바로 보이게 ─────────
    콘서트 카드가 오른쪽 끝에 있어도 가로 스크롤을 옮겨 주고 잠깐 강조해 줌 */
 let pendingFocus = null;   // { projName, taskId }
@@ -6727,6 +6828,11 @@ function startApp(){
     try { updateTrashButton(); } catch(e){}
     try { saveSnapshot(); } catch(e){}
     setInterval(() => { try { saveSnapshot(); } catch(e){} }, 15000);
+  });
+  setTimeout(checkForUpdate, 4000);
+  setInterval(checkForUpdate, 300000);
+  document.addEventListener('visibilitychange', () => {
+    if(!document.hidden) checkForUpdate();
   });
   setInterval(() => {
     const nowLabel = formatDateLabel(new Date());
