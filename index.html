@@ -417,7 +417,7 @@ const SNAP = 10;
 const colorHex = ['#7F77DD','#1D9E75','#D85A30','#D4537E','#BA7517','#2B7FB8','#B03A9B','#4C8C2B','#C0392B','#1AAAA0'];
 const colorMap = {};
 
-const APP_VERSION = '2026-11-24e';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
+const APP_VERSION = '2026-11-25a';   // 파일을 새로 올릴 때마다 날짜가 바뀌어요
 function setStatus(text){ document.getElementById('syncStatus').textContent = text; }
 (function showVersion(){
   const el = document.getElementById('appVersion');
@@ -3981,7 +3981,7 @@ function openShowDateManager(initialProjName){
   backdrop.className = 'modal-backdrop';
   const box = document.createElement('div');
   box.className = 'modal-box';
-  box.style.width = '820px';
+  box.style.cssText += 'width:min(960px, 94vw); max-width:none;';
 
   const title = document.createElement('div');
   title.className = 'modal-title';
@@ -4351,11 +4351,31 @@ function openShowDateManager(initialProjName){
     // 입력한 날짜들을 그대로 일정으로 (공연 2일차, 선예매 등)
     const dateEvents = enteredDateEvents().map(ev => ({ ev: ev, date: ev.date }));
     // 각 항목을 자기 기준일로 계산한 뒤 실제 날짜순으로 정렬
-    const sorted = dateEvents.concat((tplSet ? (tplSet.items || []) : []).slice()
-      .map(t => {
+    const expanded = [];
+    (tplSet ? (tplSet.items || []) : []).forEach(t => {
+      const bid = baseType(t.base).id;
+      if(t.each){
+        // "매 일정마다" — 그 기준의 날짜 하나하나에 대해 항목을 만든다
+        const list = (dateLists[bid] || []).filter(x => x && x.date)
+          .slice().sort((a,b) => a.date < b.date ? -1 : (a.date > b.date ? 1 : 0));
+        if(list.length === 0){
+          expanded.push({ tpl: t, date: null, anchorIso: '', anchorLabel: '' });
+        } else {
+          list.forEach(x => {
+            expanded.push({
+              tpl: t,
+              date: dateFromOffset(x.date, t.offset, t.bizDays),
+              anchorIso: x.date,
+              anchorLabel: (x.label || '').trim()
+            });
+          });
+        }
+      } else {
         const bIso = baseIsoFor(t, baseDates);
-        return { tpl: t, date: bIso ? dateFromOffset(bIso, t.offset, t.bizDays) : null };
-      }))
+        expanded.push({ tpl: t, date: bIso ? dateFromOffset(bIso, t.offset, t.bizDays) : null });
+      }
+    });
+    const sorted = dateEvents.concat(expanded)
       .sort((a,b) => {
         if(a.date && b.date) return a.date - b.date;
         if(a.date) return -1;
@@ -4400,11 +4420,9 @@ function openShowDateManager(initialProjName){
       const isDateEvent = !!entry.ev;
       const tpl = entry.tpl;
       const d = entry.date;
-      const itemName = isDateEvent ? entry.ev.text : tpl.name;
+      const itemName = entryTitle(entry);
       const dup = findExistingGenerated(name, itemName);
-      const key = isDateEvent
-        ? ('evt@' + entry.ev.baseId + '@' + entry.ev.iso + '@' + itemName)
-        : (tpl.name + '@' + (tpl.base || 'show') + tpl.offset);
+      const key = entryKey(entry);
       // 기준일이 없는 항목(티켓오픈일 미입력)은 만들 수 없음
       if(!d){ checkState[key] = false; }
       // 이미 만들어 둔 항목, 또는 날짜가 이미 지나버린 항목은 기본으로 체크 해제
@@ -4525,7 +4543,16 @@ function openShowDateManager(initialProjName){
   function entryKey(e){
     return e.ev
       ? ('evt@' + e.ev.baseId + '@' + e.ev.iso + '@' + e.ev.text)
-      : (e.tpl.name + '@' + (e.tpl.base || 'show') + e.tpl.offset);
+      : (e.tpl.name + '@' + (e.tpl.base || 'show') + e.tpl.offset + (e.anchorIso ? '@' + e.anchorIso : ''));
+  }
+
+  /* "매 일정마다" 항목은 어느 오픈일 것인지 이름 뒤에 붙여 구분한다 */
+  function entryTitle(e){
+    if(e.ev) return e.ev.text;
+    const nm = e.tpl.name || '';
+    if(!e.tpl.each || !e.anchorIso) return nm;
+    const suffix = e.anchorLabel || formatDateShort(fromISODate(e.anchorIso));
+    return nm + ' (' + suffix + ')';
   }
 
   async function runGenerate(name, baseDates, sorted, btn){
@@ -4562,7 +4589,7 @@ function openShowDateManager(initialProjName){
       const body = {
         date: dateLabel,
         project: name,
-        text: entry.ev ? entry.ev.text : tpl.name,
+        text: entryTitle(entry),
         assignee: '',
         deadline: entry.ev ? (entry.ev.time || '') : '',
         done: false,
@@ -4696,6 +4723,7 @@ function openShowDateManager(initialProjName){
     head.innerHTML = '<span style="flex:0 0 104px;">기준</span>' +
       '<span style="flex:0 0 60px;">기한</span>' +
       '<span style="flex:0 0 68px;">일수 기준</span>' +
+      '<span style="flex:0 0 84px;">반복</span>' +
       '<span style="flex:1 1 auto;">업무명</span>' +
       '<span style="flex:0 0 72px;">구분</span>' +
       '<span style="flex:0 0 92px;">카테고리</span>' +
@@ -4758,10 +4786,24 @@ function openShowDateManager(initialProjName){
         bizI.onchange = () => { tpl.bizDays = (bizI.value === 'biz'); drawRows(); };
         row.appendChild(bizI);
 
+        const eachI = document.createElement('select');
+        eachI.className = 'modal-input';
+        eachI.style.cssText = 'flex:0 0 84px; padding:5px 3px; font-size:11px;';
+        eachI.title = '"모든 일정"을 고르면 기준 날짜가 여러 개일 때 날짜마다 하나씩 만들어요 (예: 오픈일마다 배정석 검수)';
+        [['', '첫 일정만'], ['each', '모든 일정']].forEach(([v, l]) => {
+          const o2 = document.createElement('option');
+          o2.value = v; o2.textContent = l;
+          if((tpl.each ? 'each' : '') === v) o2.selected = true;
+          eachI.appendChild(o2);
+        });
+        if(tpl.each) eachI.style.color = '#2563eb';
+        eachI.onchange = () => { tpl.each = (eachI.value === 'each'); drawRows(); };
+        row.appendChild(eachI);
+
         const nameI = document.createElement('input');
         nameI.type = 'text';
         nameI.className = 'modal-input';
-        nameI.style.cssText = 'flex:1 1 auto; padding:5px 7px; font-size:12px;';
+        nameI.style.cssText = 'flex:1 1 120px; min-width:110px; padding:5px 7px; font-size:12px;';
         nameI.dataset.role = 'tplName';
         nameI.value = tpl.name || '';
         nameI.onchange = () => { tpl.name = nameI.value; };
@@ -4837,7 +4879,7 @@ function openShowDateManager(initialProjName){
     addBtn.onclick = () => {
       const set = currentSet();
       if(!set) return;
-      set.items.push({ name:'', base:'show', offset:-7, bizDays:false, type:'task', category:'', tag:'', _new: true });
+      set.items.push({ name:'', base:'show', offset:-7, bizDays:false, each:false, type:'task', category:'', tag:'', _new: true });
       drawRows();
       rowsWrap.scrollTop = rowsWrap.scrollHeight;
       const nameInputs = rowsWrap.querySelectorAll('[data-role="tplName"]');
@@ -4874,6 +4916,7 @@ function openShowDateManager(initialProjName){
             base: baseType(t.base).id,
             offset: parseInt(t.offset, 10) || 0,
             bizDays: !!t.bizDays,
+            each: !!t.each,
             type: t.type === 'event' ? 'event' : 'task',
             category: t.type === 'event' ? (t.category || '기타') : '',
             tag: (t.tag || '').trim()
